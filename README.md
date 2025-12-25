@@ -1,4 +1,4 @@
-# HardenCheck v3.0
+# HardenCheck
 
 Firmware binary security analyzer using multiple tools.
 
