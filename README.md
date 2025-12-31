@@ -1,6 +1,11 @@
-# HardenCheck
+<p align="center">
+  <strong>Hardencheck</strong>
+</p>
 
-**Firmware Binary Security Analyzer**
+<p align="center">
+  <strong>A focused tool to assess binary hardening protections in firmware executables and libraries.</strong>
+</p>
+
 
 <p align="center">
   <a href="https://github.com/v33ru/hardencheck">
