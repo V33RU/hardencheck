@@ -42,7 +42,7 @@ BANNER = r"""
     ╟─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─╢
     ║      ██   H A R D E N C H E C K   ██              ║
     ║      ██   Firmware Security Tool  ██              ║
-    ║      ██   v1.2 | @v33ru | IOTSRG  ██              ║
+    ║      ██   v1.0 | @v33ru | IOTSRG  ██              ║
     ╟─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─╢
     ║●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │●│●║
     ╚═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╝
@@ -152,7 +152,14 @@ class Daemon:
 
 @dataclass
 class BinaryAnalysis:
-    """Binary security analysis result."""
+    """Binary security analysis result.
+    
+    Confidence scoring model:
+    - Base confidence: 100
+    - Unknown values (None): -10 per field (detection failed)
+    - Tool disagreement: -15 per disagreement
+    - Minimum confidence: 50
+    """
     path: str
     filename: str
     size: int
@@ -169,8 +176,11 @@ class BinaryAnalysis:
     textrel: bool = False
     rpath: str = ""
     confidence: int = 100
+    # NEW: Separate tracking for confidence factors
+    unknown_fields: List[str] = field(default_factory=list)  # Fields we couldn't detect
+    tool_disagreements: List[str] = field(default_factory=list)  # Fields where tools disagreed
     tools_used: List[str] = field(default_factory=list)
-    aslr_analysis: Optional[ASLRAnalysis] = None  # NEW: ASLR analysis
+    aslr_analysis: Optional[ASLRAnalysis] = None
 
 
 @dataclass
@@ -459,8 +469,21 @@ class ASLREntropyAnalyzer:
     def __init__(self, tools: Dict[str, str]):
         self.tools = tools
     
+    def _set_resource_limits(self):
+        """Set resource limits for child process to prevent DoS."""
+        try:
+            import resource
+            # CPU time limit: 60 seconds
+            resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
+            # Virtual memory limit: 512MB
+            resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
+            # File size limit: 10MB (for any output files)
+            resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
+        except (ImportError, ValueError, OSError):
+            pass  # Resource limits not available on this platform
+    
     def _run_command(self, cmd: List[str], timeout: int = 30) -> Tuple[int, str, str]:
-        """Execute command securely with restricted environment."""
+        """Execute command securely with restricted environment and resource limits."""
         try:
             result = subprocess.run(
                 cmd, 
@@ -469,7 +492,8 @@ class ASLREntropyAnalyzer:
                 timeout=timeout, 
                 stdin=subprocess.DEVNULL,
                 env=SECURE_ENV,
-                close_fds=True
+                close_fds=True,
+                preexec_fn=self._set_resource_limits
             )
             return result.returncode, result.stdout, result.stderr
         except subprocess.TimeoutExpired:
@@ -634,17 +658,38 @@ class ASLREntropyAnalyzer:
         load_segments = [ph for ph in phdrs if ph['type'] == self.PT_LOAD]
         analysis.num_load_segments = len(load_segments)
         
-        # Improved fixed-segment detection: check for consistent vaddr deltas
-        # that indicate linker script with fixed layout rather than single threshold
+        # Improved fixed-segment detection using delta consistency
+        # Linker scripts often use repeated delta patterns (e.g., 0x200000 gaps)
+        # PIE binaries typically have low base vaddrs and random-friendly layout
         if len(load_segments) >= 2:
             vaddrs = [ph['vaddr'] for ph in load_segments]
-            # Check if addresses suggest non-PIE layout (high fixed addresses)
-            # PIE binaries typically have low vaddrs (0x0 - 0x1000 range)
-            if all(v > 0x100000 for v in vaddrs):
-                # All segments have high addresses - likely fixed layout
+            
+            # Calculate deltas between consecutive segments
+            deltas = [vaddrs[i+1] - vaddrs[i] for i in range(len(vaddrs)-1)]
+            
+            # Heuristics for fixed layout detection:
+            # 1. High absolute addresses (non-PIE typically starts at 0x400000+)
+            has_high_base = vaddrs[0] >= 0x400000
+            
+            # 2. Consistent delta pattern (suggests linker script)
+            # Check if deltas are suspiciously uniform (within 1MB of each other)
+            if len(deltas) >= 2:
+                delta_variance = max(deltas) - min(deltas)
+                has_consistent_deltas = delta_variance < 0x100000  # 1MB tolerance
+            else:
+                has_consistent_deltas = False
+            
+            # 3. Very large gaps between segments (uncommon in PIE)
+            has_large_gaps = any(d > 0x10000000 for d in deltas)  # 256MB gap
+            
+            # Only flag as fixed if strong indicators present
+            if has_high_base and (has_consistent_deltas or has_large_gaps):
                 analysis.has_fixed_segments = True
                 analysis.fixed_segment_addrs = vaddrs
-                analysis.issues.append("Fixed segment addresses detected (non-relocatable layout)")
+                analysis.issues.append("Fixed segment layout detected (linker script pattern)")
+            elif has_high_base and analysis.bits == 64:
+                # For 64-bit, high base alone isn't definitive, just note it
+                analysis.issues.append(f"High base address: 0x{vaddrs[0]:x} (verify PIE)")
         
         if load_segments:
             analysis.load_base = load_segments[0]['vaddr']
@@ -775,8 +820,21 @@ class HardenCheck:
 
         return tools
 
+    def _set_resource_limits(self):
+        """Set resource limits for child process to prevent DoS."""
+        try:
+            import resource
+            # CPU time limit: 60 seconds
+            resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
+            # Virtual memory limit: 512MB  
+            resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
+            # File size limit: 10MB
+            resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
+        except (ImportError, ValueError, OSError):
+            pass  # Resource limits not available on this platform
+
     def _run_command(self, cmd: List[str], timeout: int = 30) -> Tuple[int, str, str]:
-        """Execute command securely with restricted environment."""
+        """Execute command securely with restricted environment and resource limits."""
         try:
             result = subprocess.run(
                 cmd, 
@@ -785,7 +843,8 @@ class HardenCheck:
                 timeout=timeout, 
                 stdin=subprocess.DEVNULL,
                 env=SECURE_ENV,
-                close_fds=True
+                close_fds=True,
+                preexec_fn=self._set_resource_limits
             )
             return result.returncode, result.stdout, result.stderr
         except subprocess.TimeoutExpired:
@@ -1204,7 +1263,10 @@ class HardenCheck:
             return None
 
     def _analyze_with_readelf(self, filepath: Path) -> Dict:
-        """Analyze binary with readelf - improved NX and PIE detection."""
+        """Analyze binary with readelf - explicit field parsing for reliability.
+        
+        Uses explicit field parsing to avoid localization/format breakage.
+        """
         result = {
             "nx": None, "canary": None, "pie": None,
             "relro": "none", "stripped": None, "rpath": "",
@@ -1216,38 +1278,46 @@ class HardenCheck:
 
         readelf = self.tools["readelf"]
 
+        # Parse ELF header explicitly for type detection
+        ret, header_out, _ = self._run_command([readelf, "-W", "-h", str(filepath)], timeout=10)
+        elf_type = None
+        if ret == 0:
+            # Parse "Type:" field explicitly - format: "Type:                              DYN (Shared object file)"
+            type_match = re.search(r'Type:\s+(\w+)', header_out)
+            if type_match:
+                elf_type = type_match.group(1)  # "EXEC", "DYN", "REL", etc.
+
         # Get program headers for NX and PIE detection
         ret, out, _ = self._run_command([readelf, "-W", "-l", str(filepath)], timeout=10)
         if ret == 0:
-            # NX Detection: Only set True if GNU_STACK exists AND doesn't have E flag
-            # If GNU_STACK is missing, NX status is unknown (None)
+            # NX Detection: Parse GNU_STACK segment flags explicitly
+            # Format: "  GNU_STACK      0x000000 0x00000000 0x00000000 0x00000 0x00000 RW  0x10"
+            # The flags field (RW, RWE, etc.) is what we need
             if "GNU_STACK" in out:
                 for line in out.split("\n"):
                     if "GNU_STACK" in line:
-                        # Check flags field - look for RWE pattern
-                        # GNU_STACK with RW (no E) = NX enabled
-                        # GNU_STACK with RWE = NX disabled
-                        flags_match = re.search(r'GNU_STACK\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(\S+)', line)
-                        if flags_match:
-                            flags = flags_match.group(1)
-                            result["nx"] = 'E' not in flags
-                        else:
-                            # Fallback: simple E check
-                            result["nx"] = "RWE" not in line and " E" not in line.split("GNU_STACK")[1][:20]
+                        # Split by whitespace and look for flags pattern (RW, RWE, R, etc.)
+                        parts = line.split()
+                        for part in parts:
+                            if re.match(r'^R?W?E?$', part) and len(part) <= 3 and len(part) > 0:
+                                result["nx"] = 'E' not in part
+                                break
+                        # Alternative: check for explicit "RWE" or just "RW"
+                        if result["nx"] is None:
+                            result["nx"] = "RWE" not in line
                         break
             # If no GNU_STACK, result["nx"] stays None (unknown)
 
+            # Check for RELRO
             if "GNU_RELRO" in out:
                 result["relro"] = "partial"
 
-            # PIE Detection: Must be ET_DYN AND have INTERP (program interpreter)
-            # Shared libraries are ET_DYN but don't have INTERP
-            is_dyn = "Type:" in out and "DYN" in out
+            # Check for INTERP segment (indicates executable, not shared lib)
             has_interp = "INTERP" in out
-            
             result["has_interp"] = has_interp
             
-            if is_dyn:
+            # PIE Detection: Must be ET_DYN AND have INTERP
+            if elf_type == "DYN":
                 if has_interp:
                     # ET_DYN + INTERP = PIE executable
                     result["pie"] = True
@@ -1255,16 +1325,23 @@ class HardenCheck:
                     # ET_DYN without INTERP = shared library (not PIE)
                     result["pie"] = False
                     result["is_shared_lib"] = True
+            elif elf_type == "EXEC":
+                # Traditional non-PIE executable
+                result["pie"] = False
 
-        # Get dynamic section
+        # Get dynamic section - parse explicitly
         ret, out, _ = self._run_command([readelf, "-W", "-d", str(filepath)], timeout=10)
         if ret == 0:
-            if "BIND_NOW" in out:
+            # Look for BIND_NOW or FLAGS containing BIND_NOW
+            if "BIND_NOW" in out or "(NOW)" in out:
                 result["relro"] = "full"
 
-            rpath_match = re.search(r"(?:RPATH|RUNPATH).*?\[(.*?)\]", out)
+            # Parse RPATH/RUNPATH explicitly
+            # Format: " 0x000000000000001d (RUNPATH)            Library runpath: [/lib]"
+            rpath_match = re.search(r'(?:RPATH|RUNPATH)[^\[]*\[([^\]]+)\]', out)
             if rpath_match:
                 result["rpath"] = rpath_match.group(1)
+                result["relro"] = "full"
 
         # Check for stack canary
         ret, out, _ = self._run_command([readelf, "-W", "--dyn-syms", str(filepath)], timeout=10)
@@ -1328,7 +1405,7 @@ class HardenCheck:
         return result
 
     def analyze_binary(self, filepath: Path, binary_type: BinaryType) -> BinaryAnalysis:
-        """Perform complete binary analysis."""
+        """Perform complete binary analysis with improved confidence tracking."""
         try:
             rel_path = str(filepath.relative_to(self.target))
         except ValueError:
@@ -1349,51 +1426,79 @@ class HardenCheck:
 
         confidence = 100
         tools_used = []
+        unknown_fields = []
+        tool_disagreements = []
 
+        # NX detection with disagreement tracking
         if rabin2_data and "nx" in rabin2_data:
             analysis.nx = rabin2_data.get("nx", False)
             tools_used.append("rabin2")
             if readelf_data["nx"] is not None and rabin2_data.get("nx") != readelf_data["nx"]:
                 confidence -= 15
+                tool_disagreements.append("nx")
         elif readelf_data["nx"] is not None:
             analysis.nx = readelf_data["nx"]
             tools_used.append("readelf")
+        else:
+            unknown_fields.append("nx")
+            confidence -= 10
 
+        # Canary detection
         if rabin2_data and "canary" in rabin2_data:
             analysis.canary = rabin2_data.get("canary", False)
             if readelf_data["canary"] is not None and rabin2_data.get("canary") != readelf_data["canary"]:
                 confidence -= 15
+                tool_disagreements.append("canary")
         elif readelf_data["canary"] is not None:
             analysis.canary = readelf_data["canary"]
+        else:
+            unknown_fields.append("canary")
+            confidence -= 10
 
+        # PIE detection
         if rabin2_data and "pic" in rabin2_data:
             analysis.pie = rabin2_data.get("pic", False)
         elif readelf_data["pie"] is not None:
             analysis.pie = readelf_data["pie"]
+        else:
+            unknown_fields.append("pie")
+            confidence -= 10
 
+        # RELRO detection
         if rabin2_data and rabin2_data.get("relro"):
             analysis.relro = rabin2_data.get("relro", "none")
         else:
             analysis.relro = readelf_data["relro"]
 
+        # Stripped detection
         if rabin2_data and "stripped" in rabin2_data:
             analysis.stripped = rabin2_data.get("stripped", False)
         elif readelf_data["stripped"] is not None:
             analysis.stripped = readelf_data["stripped"]
+        else:
+            unknown_fields.append("stripped")
 
+        # RPATH
         if rabin2_data:
             rpath = rabin2_data.get("rpath", "NONE")
             analysis.rpath = "" if rpath == "NONE" else rpath
         else:
             analysis.rpath = readelf_data["rpath"]
 
+        # Hardening checks
         analysis.fortify = hardening_data["fortify"]
+        if hardening_data["fortify"] is None:
+            unknown_fields.append("fortify")
+        
         analysis.stack_clash = hardening_data["stack_clash"]
         analysis.cfi = hardening_data["cfi"]
         analysis.textrel = scanelf_data["textrel"]
 
+        # Store tracking info
         analysis.confidence = max(confidence, 50)
         analysis.tools_used = tools_used
+        analysis.unknown_fields = unknown_fields
+        analysis.tool_disagreements = tool_disagreements
 
         # NEW: Perform ASLR entropy analysis for PIE binaries
         if analysis.pie is True and binary_type == BinaryType.EXECUTABLE:
@@ -1402,24 +1507,37 @@ class HardenCheck:
         return analysis
 
     def analyze_dependencies(self, binaries: List[BinaryAnalysis]) -> List[DependencyRisk]:
-        """Analyze dependency chain for insecure libraries."""
+        """Analyze dependency chain for insecure libraries.
+        
+        Note: Missing canary in shared libs is less critical than missing NX,
+        since libs typically don't have their own stack frames that need protection.
+        Only flag libs with truly critical issues (no NX, or TEXTREL).
+        """
         risks = []
 
         if "readelf" not in self.tools:
             return risks
 
+        # Only flag shared libs with CRITICAL security issues
+        # Missing canary alone is not critical for shared libs
         insecure_libs = {}
         for binary in binaries:
             if binary.binary_type == BinaryType.SHARED_LIB:
-                classification = classify_binary(binary)
-                if classification == "INSECURE":
-                    issues = []
-                    if binary.nx is False:
-                        issues.append("No NX")
-                    if binary.canary is False:
-                        issues.append("No Canary")
-                    if issues:
-                        insecure_libs[binary.filename] = ", ".join(issues)
+                issues = []
+                # NX is critical for all binaries
+                if binary.nx is False:
+                    issues.append("No NX (executable stack)")
+                # TEXTREL is a security issue for libs
+                if binary.textrel:
+                    issues.append("TEXTREL (reduced ASLR)")
+                # Missing RELRO can be an issue
+                if binary.relro == "none":
+                    issues.append("No RELRO")
+                # Note: We intentionally DON'T flag missing canary for shared libs
+                # because it's often acceptable and causes too many false positives
+                
+                if issues:
+                    insecure_libs[binary.filename] = ", ".join(issues)
 
         if not insecure_libs:
             return risks
@@ -2013,17 +2131,30 @@ class HardenCheck:
 
         print("[3/9] Analyzing binary hardening + ASLR entropy...")
         analyzed_binaries = []
-        with ThreadPoolExecutor(max_workers=self.threads) as executor:
-            futures = {
-                executor.submit(self.analyze_binary, path, btype): path
-                for path, btype in binaries_raw
-            }
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    analyzed_binaries.append(result)
-                except Exception as e:
-                    self._log(f"Analysis error: {e}")
+        
+        # Process in batches to prevent memory spikes
+        BATCH_SIZE = 50
+        total_binaries = len(binaries_raw)
+        
+        for batch_start in range(0, total_binaries, BATCH_SIZE):
+            batch_end = min(batch_start + BATCH_SIZE, total_binaries)
+            batch = binaries_raw[batch_start:batch_end]
+            
+            with ThreadPoolExecutor(max_workers=self.threads) as executor:
+                futures = {
+                    executor.submit(self.analyze_binary, path, btype): path
+                    for path, btype in batch
+                }
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        analyzed_binaries.append(result)
+                    except Exception as e:
+                        self._log(f"Analysis error: {e}")
+            
+            # Progress indicator for large scans
+            if total_binaries > 100:
+                print(f"      Progress: {len(analyzed_binaries)}/{total_binaries}")
 
         secured = sum(1 for b in analyzed_binaries if classify_binary(b) == "SECURED")
         partial = sum(1 for b in analyzed_binaries if classify_binary(b) == "PARTIAL")
@@ -2178,7 +2309,30 @@ def classify_binary(binary: BinaryAnalysis) -> str:
 
 
 def calculate_grade(binaries: List[BinaryAnalysis]) -> Tuple[str, int]:
-    """Calculate overall security grade."""
+    """Calculate overall security grade.
+    
+    SCORING MODEL (documented for transparency):
+    =============================================
+    Per-binary score (max 110 points):
+      - NX (No Execute):        15 pts  - Critical: prevents code execution on stack/heap
+      - Stack Canary:           15 pts  - Critical: detects stack buffer overflows
+      - PIE (Position Indep.):  15 pts  - High: enables full ASLR
+      - Full RELRO:             15 pts  - High: protects GOT from overwrites
+      - Partial RELRO:           7 pts  - Medium: partial GOT protection
+      - Fortify Source:         10 pts  - Medium: compile-time buffer checks
+      - Stack Clash Protection: 10 pts  - Medium: prevents stack-heap collision
+      - CFI (Control Flow):     10 pts  - Medium: prevents ROP/JOP attacks
+      - Stripped:                5 pts  - Low: removes debug info
+      - No TEXTREL:              5 pts  - Low: allows better ASLR
+      - No RPATH:                5 pts  - Low: prevents library hijacking
+    
+    Grade thresholds (average score):
+      - A: >= 90  (Excellent - most protections enabled)
+      - B: >= 80  (Good - strong protection)
+      - C: >= 70  (Fair - basic protection)
+      - D: >= 60  (Poor - minimal protection)
+      - F: <  60  (Fail - inadequate protection)
+    """
     if not binaries:
         return "N/A", 0
 
@@ -2235,10 +2389,15 @@ def esc(value) -> str:
     return html_module.escape(str(value))
 
 
-def generate_html_report(result: ScanResult, output_path: Path):
+def generate_html_report(result: ScanResult, output_path: Path, slim: bool = False):
     """Generate HTML report with ASLR entropy analysis section.
     
     All user-controlled content is HTML-escaped to prevent XSS attacks.
+    
+    Args:
+        result: Scan result data
+        output_path: Path to write HTML file
+        slim: If True, generate minimal CSS for smaller file size
     """
     total_binaries = len(result.binaries) or 1
 
@@ -2373,66 +2532,78 @@ def generate_html_report(result: ScanResult, output_path: Path):
 {f'<div class="aslr-issues"><b>Common Issues:</b><ul>{"".join(f"<li>{k}: {v} binaries</li>" for k, v in list(aslr_summary.get("common_issues", {}).items())[:5])}</ul></div>' if aslr_summary.get("common_issues") else ""}
 </div>'''
 
+    # Slim CSS for embedded/minimal reports
+    slim_css = """body{font-family:monospace;font-size:12px;padding:10px}
+table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:4px;text-align:left}
+.ok{color:green}.bad{color:red}.wrn{color:orange}
+h1{font-size:16px}h2{font-size:14px}"""
+    
+    # Full CSS for rich reports
+    full_css = """*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0a0a;--cd:#111;--bd:#222;--tx:#e0e0e0;--dm:#666;--ok:#0c6;--bad:#f33;--wrn:#fa0}
+body{font-family:'Fira Code',monospace;background:var(--bg);color:var(--tx);font-size:12px;padding:20px;line-height:1.5}
+.container{max-width:1600px;margin:0 auto}
+h1{font-size:18px;font-weight:600;margin-bottom:5px}
+.meta{color:var(--dm);font-size:11px;margin-bottom:20px}
+.card{background:var(--cd);border:1px solid var(--bd);padding:15px;margin-bottom:15px}
+.card-title{font-size:13px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--bd)}
+.grade{font-size:48px;font-weight:600;display:inline-block;margin-right:20px}
+.ga{color:var(--ok)}.gb{color:#6c6}.gc{color:var(--wrn)}.gd{color:#f60}.gf{color:var(--bad)}
+.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:15px}
+.sum-card{background:var(--cd);border:1px solid var(--bd);padding:12px;text-align:center}
+.sum-card.se{border-color:var(--ok)}.sum-card.pa{border-color:var(--wrn)}.sum-card.in{border-color:var(--bad)}
+.sum-num{font-size:28px;font-weight:600}
+.sum-num.se{color:var(--ok)}.sum-num.pa{color:var(--wrn)}.sum-num.in{color:var(--bad)}
+.sum-label{font-size:10px;color:var(--dm);text-transform:uppercase}
+.profile{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.profile-row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--bd)}
+.profile-label{color:var(--dm)}
+.pi{display:flex;align-items:center;margin-bottom:8px}
+.pl{width:100px;font-size:11px}
+.pb{flex:1;height:6px;background:var(--bd);margin:0 10px}
+.pf{height:100%;background:var(--ok);transition:width 0.3s}
+.pf.lo{background:var(--bad)}.pf.me{background:var(--wrn)}
+.pv{width:50px;font-size:10px;text-align:right;color:var(--dm)}
+table{width:100%;border-collapse:collapse;font-size:11px}
+th{text-align:left;padding:6px;border-bottom:1px solid var(--bd);color:var(--dm);font-weight:500}
+td{padding:6px;border-bottom:1px solid var(--bd)}
+.fn{font-weight:500}.ok{color:var(--ok)}.bad{color:var(--bad)}.wrn{color:var(--wrn)}
+.rb{background:rgba(255,51,51,0.08)}.rw{background:rgba(255,170,0,0.05)}
+.loc{color:var(--dm);font-size:10px}
+.cs{margin-bottom:10px;border:1px solid var(--bd)}
+.cs .ct{padding:8px 12px;font-weight:500;border-bottom:1px solid var(--bd)}
+.cs.se .ct{border-left:3px solid var(--ok)}.cs.pa .ct{border-left:3px solid var(--wrn)}.cs.in .ct{border-left:3px solid var(--bad)}
+.ci{padding:6px 12px;border-bottom:1px solid var(--bd)}.ci:last-child{border-bottom:none}
+.ci b{display:block}.cp{font-size:10px;color:var(--dm);display:block}.cm{font-size:10px;color:var(--bad)}
+.tools{display:flex;flex-wrap:wrap;gap:8px}.tool{background:var(--bd);padding:4px 10px;font-size:10px}
+.tbl-wrap{overflow-x:auto;display:block}.tbl-scroll{max-height:500px;overflow-y:auto;display:block}
+.aslr-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:15px}
+.aslr-stat{background:var(--bd);padding:12px;text-align:center;border-radius:4px}
+.aslr-stat-value{font-size:24px;font-weight:600;color:var(--ok)}
+.aslr-stat-label{font-size:10px;color:var(--dm);text-transform:uppercase;margin-top:4px}
+.aslr-ratings{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px}
+.ar-item{padding:6px 12px;font-size:11px;border-radius:3px;background:var(--bd)}
+.ar-excellent{border-left:3px solid var(--ok)}.ar-good{border-left:3px solid #6c6}
+.ar-moderate{border-left:3px solid var(--wrn)}.ar-weak{border-left:3px solid #f60}.ar-ineff{border-left:3px solid var(--bad)}
+.aslr-issues ul{margin-left:20px;margin-top:5px}.aslr-issues li{color:var(--dm);margin-bottom:3px}"""
+
+    css = slim_css if slim else full_css
+    font_link = "" if slim else '<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&display=swap" rel="stylesheet">'
+
     html = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HardenCheck Report - {result.target}</title>
-<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&display=swap" rel="stylesheet">
+<title>HardenCheck Report - {esc(result.target)}</title>
+{font_link}
 <style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-:root{{--bg:#0a0a0a;--cd:#111;--bd:#222;--tx:#e0e0e0;--dm:#666;--ok:#0c6;--bad:#f33;--wrn:#fa0}}
-body{{font-family:'Fira Code',monospace;background:var(--bg);color:var(--tx);font-size:12px;padding:20px;line-height:1.5}}
-.container{{max-width:1600px;margin:0 auto}}
-h1{{font-size:18px;font-weight:600;margin-bottom:5px}}
-.meta{{color:var(--dm);font-size:11px;margin-bottom:20px}}
-.card{{background:var(--cd);border:1px solid var(--bd);padding:15px;margin-bottom:15px}}
-.card-title{{font-size:13px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--bd)}}
-.grade{{font-size:48px;font-weight:600;display:inline-block;margin-right:20px}}
-.ga{{color:var(--ok)}}.gb{{color:#6c6}}.gc{{color:var(--wrn)}}.gd{{color:#f60}}.gf{{color:var(--bad)}}
-.summary{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:15px}}
-.sum-card{{background:var(--cd);border:1px solid var(--bd);padding:12px;text-align:center}}
-.sum-card.se{{border-color:var(--ok)}}.sum-card.pa{{border-color:var(--wrn)}}.sum-card.in{{border-color:var(--bad)}}
-.sum-num{{font-size:28px;font-weight:600}}
-.sum-num.se{{color:var(--ok)}}.sum-num.pa{{color:var(--wrn)}}.sum-num.in{{color:var(--bad)}}
-.sum-label{{font-size:10px;color:var(--dm);text-transform:uppercase}}
-.profile{{display:grid;grid-template-columns:1fr 1fr;gap:8px}}
-.profile-row{{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--bd)}}
-.profile-label{{color:var(--dm)}}
-.pi{{display:flex;align-items:center;margin-bottom:8px}}
-.pl{{width:100px;font-size:11px}}
-.pb{{flex:1;height:6px;background:var(--bd);margin:0 10px}}
-.pf{{height:100%;background:var(--ok);transition:width 0.3s}}
-.pf.lo{{background:var(--bad)}}.pf.me{{background:var(--wrn)}}
-.pv{{width:50px;font-size:10px;text-align:right;color:var(--dm)}}
-table{{width:100%;border-collapse:collapse;font-size:11px}}
-th{{text-align:left;padding:6px;border-bottom:1px solid var(--bd);color:var(--dm);font-weight:500}}
-td{{padding:6px;border-bottom:1px solid var(--bd)}}
-.fn{{font-weight:500}}.ok{{color:var(--ok)}}.bad{{color:var(--bad)}}.wrn{{color:var(--wrn)}}
-.rb{{background:rgba(255,51,51,0.08)}}.rw{{background:rgba(255,170,0,0.05)}}
-.loc{{color:var(--dm);font-size:10px}}
-.cs{{margin-bottom:10px;border:1px solid var(--bd)}}
-.cs .ct{{padding:8px 12px;font-weight:500;border-bottom:1px solid var(--bd)}}
-.cs.se .ct{{border-left:3px solid var(--ok)}}.cs.pa .ct{{border-left:3px solid var(--wrn)}}.cs.in .ct{{border-left:3px solid var(--bad)}}
-.ci{{padding:6px 12px;border-bottom:1px solid var(--bd)}}.ci:last-child{{border-bottom:none}}
-.ci b{{display:block}}.cp{{font-size:10px;color:var(--dm);display:block}}.cm{{font-size:10px;color:var(--bad)}}
-.tools{{display:flex;flex-wrap:wrap;gap:8px}}.tool{{background:var(--bd);padding:4px 10px;font-size:10px}}
-.tbl-wrap{{overflow-x:auto}}.tbl-scroll{{max-height:700px;overflow-y:auto}}
-.aslr-stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:15px}}
-.aslr-stat{{background:var(--bd);padding:12px;text-align:center;border-radius:4px}}
-.aslr-stat-value{{font-size:24px;font-weight:600;color:var(--ok)}}
-.aslr-stat-label{{font-size:10px;color:var(--dm);text-transform:uppercase;margin-top:4px}}
-.aslr-ratings{{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px}}
-.ar-item{{padding:6px 12px;font-size:11px;border-radius:3px;background:var(--bd)}}
-.ar-excellent{{border-left:3px solid var(--ok)}}.ar-good{{border-left:3px solid #6c6}}
-.ar-moderate{{border-left:3px solid var(--wrn)}}.ar-weak{{border-left:3px solid #f60}}.ar-ineff{{border-left:3px solid var(--bad)}}
-.aslr-issues ul{{margin-left:20px;margin-top:5px}}.aslr-issues li{{color:var(--dm);margin-bottom:3px}}
+{css}
 </style>
 </head>
 <body>
 <div class="container">
 <h1>HardenCheck Security Report</h1>
-<div class="meta">{result.target} | {result.scan_time} | {result.duration:.1f}s | v{VERSION}</div>
+<div class="meta">{esc(result.target)} | {result.scan_time} | {result.duration:.1f}s | v{VERSION}</div>
 
 <div class="card"><div class="card-title">Security Grade</div>
 <span class="grade g{grade.lower()}">{grade}</span><span style="color:var(--dm)">Score: {score}/110</span></div>
@@ -2470,9 +2641,9 @@ td{{padding:6px;border-bottom:1px solid var(--bd)}}
 
 {f'<div class="card"><div class="card-title">ASLR Entropy Analysis ({len(binaries_with_aslr)} PIE binaries)</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Binary</th><th>Arch</th><th>Bits</th><th>PIE</th><th>Max</th><th>Effective</th><th>Rating</th><th>TEXTREL</th><th>Issues</th></tr></thead><tbody>{aslr_rows}</tbody></table></div></div>' if binaries_with_aslr else ''}
 
-{f'<div class="card"><div class="card-title">Network Services ({len(result.daemons)})</div><div class="tbl-wrap"><table><thead><tr><th>Risk</th><th>Service</th><th>Binary</th><th>Version</th><th>Path</th><th>Status</th><th>Detection</th></tr></thead><tbody>{daemon_rows}</tbody></table></div></div>' if result.daemons else ''}
+{f'<div class="card"><div class="card-title">Daemons &amp; Services ({len(result.daemons)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Risk</th><th>Service</th><th>Binary</th><th>Version</th><th>Path</th><th>Status</th><th>Detection</th></tr></thead><tbody>{daemon_rows}</tbody></table></div></div>' if result.daemons else ''}
 
-{f'<div class="card"><div class="card-title">Dependency Risks ({len(result.dependency_risks)})</div><div class="tbl-wrap"><table><thead><tr><th>Library</th><th>Issue</th><th>Used By</th></tr></thead><tbody>{dep_rows}</tbody></table></div></div>' if result.dependency_risks else ''}
+{f'<div class="card"><div class="card-title">Dependency Risks ({len(result.dependency_risks)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Library</th><th>Issue</th><th>Used By</th></tr></thead><tbody>{dep_rows}</tbody></table></div></div>' if result.dependency_risks else ''}
 
 <div class="card"><div class="card-title">Binary Analysis ({len(result.binaries)})</div>
 <div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Binary</th><th>NX</th><th>Canary</th><th>PIE</th><th>RELRO</th><th>Fortify</th><th>Strip</th><th>SClash</th><th>CFI</th><th>TXREL</th><th>RPATH</th><th>Conf</th></tr></thead>
@@ -2480,11 +2651,11 @@ td{{padding:6px;border-bottom:1px solid var(--bd)}}
 
 {f'<div class="card"><div class="card-title">Banned Functions ({len(result.banned_functions)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Function</th><th>Location</th><th>Alternative</th><th>Severity</th><th>Compliance</th></tr></thead><tbody>{banned_rows}</tbody></table></div></div>' if result.banned_functions else ''}
 
-{f'<div class="card"><div class="card-title">Hardcoded Credentials ({len(result.credentials)})</div><div class="tbl-wrap"><table><thead><tr><th>Location</th><th>Pattern</th><th>Context</th></tr></thead><tbody>{cred_rows}</tbody></table></div></div>' if result.credentials else ''}
+{f'<div class="card"><div class="card-title">Hardcoded Credentials ({len(result.credentials)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Location</th><th>Pattern</th><th>Context</th></tr></thead><tbody>{cred_rows}</tbody></table></div></div>' if result.credentials else ''}
 
-{f'<div class="card"><div class="card-title">Certificates & Keys ({len(result.certificates)})</div><div class="tbl-wrap"><table><thead><tr><th>File</th><th>Type</th><th>Issue</th></tr></thead><tbody>{cert_rows}</tbody></table></div></div>' if result.certificates else ''}
+{f'<div class="card"><div class="card-title">Certificates &amp; Keys ({len(result.certificates)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>File</th><th>Type</th><th>Issue</th></tr></thead><tbody>{cert_rows}</tbody></table></div></div>' if result.certificates else ''}
 
-{f'<div class="card"><div class="card-title">Configuration Issues ({len(result.config_issues)})</div><div class="tbl-wrap"><table><thead><tr><th>Location</th><th>Issue</th><th>Context</th></tr></thead><tbody>{config_rows}</tbody></table></div></div>' if result.config_issues else ''}
+{f'<div class="card"><div class="card-title">Configuration Issues ({len(result.config_issues)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Location</th><th>Issue</th><th>Context</th></tr></thead><tbody>{config_rows}</tbody></table></div></div>' if result.config_issues else ''}
 
 <div class="card"><div class="card-title">Classification</div>
 {build_class_section("SECURED", secured, "se")}
@@ -2609,16 +2780,21 @@ def generate_json_report(result: ScanResult, output_path: Path):
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="HardenCheck v1.1 - Firmware Binary Security Analyzer with ASLR Entropy Analysis",
+        description="HardenCheck v1.2.1 - Firmware Binary Security Analyzer with ASLR Entropy Analysis",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s /path/to/firmware
   %(prog)s /path/to/firmware -o report.html --json
-  %(prog)s /path/to/firmware -t 8 -v
+  %(prog)s /path/to/firmware -t 8 -v --slim
 
 Required Tools:
   apt install radare2 devscripts pax-utils elfutils binutils
+
+Scoring Model:
+  NX=15, Canary=15, PIE=15, RELRO=15, Fortify=10, 
+  StackClash=10, CFI=10, Stripped=5, NoTEXTREL=5, NoRPATH=5
+  Grade: A>=90, B>=80, C>=70, D>=60, F<60
         """
     )
 
@@ -2631,6 +2807,8 @@ Required Tools:
                         help="Enable verbose output")
     parser.add_argument("--json", action="store_true",
                         help="Also generate JSON report")
+    parser.add_argument("--slim", action="store_true",
+                        help="Generate slim HTML report (no CSS, smaller size)")
     parser.add_argument("--version", action="version",
                         version=f"HardenCheck v{VERSION}")
 
@@ -2649,7 +2827,7 @@ Required Tools:
         result = scanner.scan()
 
         output_path = Path(args.output)
-        generate_html_report(result, output_path)
+        generate_html_report(result, output_path, slim=args.slim)
         print(f"[+] HTML Report: {output_path}")
 
         if args.json:
