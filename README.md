@@ -112,7 +112,10 @@
 
 ```bash
 # 1. Install dependencies
-sudo apt install radare2 devscripts pax-utils elfutils binutils
+radare2
+install from here - https://github.com/radareorg/radare2/releases
+
+sudo apt install devscripts pax-utils elfutils binutils
 
 # 2. Clone & run
 git clone https://github.com/v33ru/hardencheck.git
