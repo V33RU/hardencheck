@@ -302,41 +302,107 @@ LOW_RISK_FUNCTIONS = {
 
 # Known network services with risk levels
 KNOWN_SERVICES = {
+    # Critical - unauthenticated/weak auth remote access
     "telnetd":     "CRITICAL",
-    "utelnetd":    "CRITICAL",
+    "utelnetd":    "CRITICAL", 
     "rlogind":     "CRITICAL",
     "rshd":        "CRITICAL",
+    "rexecd":      "CRITICAL",
+    "tftpd":       "CRITICAL",
+    "atftpd":      "CRITICAL",
+    
+    # High - common attack targets
     "ftpd":        "HIGH",
     "vsftpd":      "HIGH",
     "proftpd":     "HIGH",
+    "pure-ftpd":   "HIGH",
+    "bftpd":       "HIGH",
     "httpd":       "HIGH",
     "uhttpd":      "HIGH",
     "lighttpd":    "HIGH",
     "nginx":       "HIGH",
+    "apache":      "HIGH",
+    "apache2":     "HIGH",
     "goahead":     "HIGH",
     "boa":         "HIGH",
     "thttpd":      "HIGH",
     "mini_httpd":  "HIGH",
+    "minihttpd":   "HIGH",
+    "alphapd":     "HIGH",
+    "httpd_gargoyle": "HIGH",
     "miniupnpd":   "HIGH",
     "upnpd":       "HIGH",
+    "igmpproxy":   "HIGH",
     "snmpd":       "HIGH",
+    "net-snmpd":   "HIGH",
     "cwmpd":       "HIGH",
     "tr069":       "HIGH",
+    "tr064":       "HIGH",
     "smbd":        "HIGH",
     "nmbd":        "HIGH",
+    "afpd":        "HIGH",
+    "netatalk":    "HIGH",
+    "lpd":         "HIGH",
+    "cupsd":       "HIGH",
+    "xinetd":      "HIGH",
+    "inetd":       "HIGH",
+    
+    # Medium - usually authenticated or limited exposure
     "sshd":        "MEDIUM",
     "dropbear":    "MEDIUM",
     "dnsmasq":     "MEDIUM",
     "named":       "MEDIUM",
+    "bind":        "MEDIUM",
+    "unbound":     "MEDIUM",
     "mosquitto":   "MEDIUM",
     "mqttd":       "MEDIUM",
+    "emqx":        "MEDIUM",
     "hostapd":     "MEDIUM",
     "wpa_supplicant": "MEDIUM",
+    "pppd":        "MEDIUM",
+    "pppoe":       "MEDIUM",
+    "xl2tpd":      "MEDIUM",
+    "openl2tpd":   "MEDIUM",
+    "openvpn":     "MEDIUM",
+    "ipsec":       "MEDIUM",
+    "racoon":      "MEDIUM",
+    "zebra":       "MEDIUM",
+    "ripd":        "MEDIUM",
+    "ospfd":       "MEDIUM",
+    "bgpd":        "MEDIUM",
+    "dhcpd":       "MEDIUM",
+    "dhclient":    "MEDIUM",
+    "udhcpd":      "MEDIUM",
+    "udhcpc":      "MEDIUM",
+    "radvd":       "MEDIUM",
+    "avahi-daemon": "MEDIUM",
+    "mdnsd":       "MEDIUM",
+    "wsdd":        "MEDIUM",
+    "lldpd":       "MEDIUM",
+    "portmap":     "MEDIUM",
+    "rpcbind":     "MEDIUM",
+    "nfsd":        "MEDIUM",
+    "mountd":      "MEDIUM",
+    "statd":       "MEDIUM",
+    "ypbind":      "MEDIUM",
+    "ypserv":      "MEDIUM",
+    
+    # Low - monitoring/logging/time
     "ntpd":        "LOW",
     "chronyd":     "LOW",
     "crond":       "LOW",
+    "cron":        "LOW",
+    "atd":         "LOW",
     "syslogd":     "LOW",
     "klogd":       "LOW",
+    "rsyslogd":    "LOW",
+    "syslog-ng":   "LOW",
+    "logd":        "LOW",
+    "watchdog":    "LOW",
+    "monit":       "LOW",
+    "collectd":    "LOW",
+    "snortd":      "LOW",
+    "zabbix_agentd": "LOW",
 }
 
 NETWORK_SYMBOLS = {
@@ -911,6 +977,7 @@ class HardenCheck:
         binaries = []
         sources = []
         configs = []
+        seen_inodes = set()  # Track seen files to avoid duplicates
 
         source_extensions = {".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx"}
         config_extensions = {".conf", ".cfg", ".ini", ".config", ".xml", ".json", ".yaml", ".yml"}
@@ -923,7 +990,20 @@ class HardenCheck:
             for filename in files:
                 filepath = Path(root) / filename
 
-                if filepath.is_symlink():
+                # Follow symlinks but track to avoid duplicates
+                try:
+                    if filepath.is_symlink():
+                        real_path = filepath.resolve()
+                        # Check if target exists and is within our scan directory
+                        if not real_path.exists():
+                            continue
+                        # Get inode to detect duplicates (same file, different symlinks)
+                        stat_info = real_path.stat()
+                        inode = (stat_info.st_dev, stat_info.st_ino)
+                        if inode in seen_inodes:
+                            continue
+                        seen_inodes.add(inode)
+                except (OSError, PermissionError):
                     continue
 
                 if self._is_elf_file(filepath):
@@ -1147,7 +1227,15 @@ class HardenCheck:
         return "Unknown"
 
     def detect_daemons(self, binaries: List[BinaryAnalysis]) -> List[Daemon]:
-        """Detect network services and daemons with improved accuracy."""
+        """Detect network services and daemons.
+        
+        Detection methods (in order of confidence):
+        1. Known service names (KNOWN_SERVICES dict) - HIGH confidence
+        2. Ends with 'd' + has network symbols - MEDIUM confidence  
+        3. Ends with 'd' + referenced in init scripts - MEDIUM confidence
+        4. Has network symbols + referenced in init - MEDIUM confidence
+        5. Ends with 'd' + common daemon patterns - LOW confidence
+        """
         daemons = []
         seen_binaries = set()
         
@@ -1160,6 +1248,18 @@ class HardenCheck:
 
         executables = [b for b in binaries if b.binary_type == BinaryType.EXECUTABLE]
 
+        # Common non-daemon binaries ending in 'd' to exclude
+        non_daemons = {
+            "systemd", "udevd", "lvmetad", "kmod", "modload",
+            "chmod", "chgrp", "chown", "find", "sed", "awk", "gawk",
+            "head", "tail", "fold", "expand", "unexpand", "od",
+            "bind", "send", "read", "unload", "reload", "load",
+            "passwd", "chpasswd", "mkpasswd", "grpck", "pwck",
+            "insmod", "rmmod", "lsmod", "depmod", "modprobe",
+            "mknod", "makedevd", "start-stop-daemon",
+            "ifupd", "ifdownd", "ip", "id", "md", "cd",
+        }
+
         for binary in executables:
             filename = binary.filename
             filename_lower = filename.lower()
@@ -1167,15 +1267,18 @@ class HardenCheck:
             if filename_lower in seen_binaries:
                 continue
             
-            # Skip if this is a BusyBox symlink (same inode/path pattern)
+            # Skip excluded non-daemons
+            if filename_lower in non_daemons:
+                continue
+            
+            # Skip if this is a BusyBox symlink
             if busybox_path and binary.path != busybox_path:
-                # Check if it's likely a busybox applet (symlink to busybox)
                 filepath = self.target / binary.path
                 try:
                     if filepath.is_symlink():
                         link_target = os.readlink(filepath)
                         if "busybox" in link_target.lower():
-                            continue  # Skip busybox applets
+                            continue
                 except (OSError, PermissionError):
                     pass
 
@@ -1183,36 +1286,46 @@ class HardenCheck:
             reason_parts = []
             risk = "UNKNOWN"
 
-            # Method 1: Known service names (high confidence)
+            # Method 1: Known service names (HIGH confidence)
             if filename_lower in KNOWN_SERVICES:
                 is_daemon = True
                 risk = KNOWN_SERVICES[filename_lower]
                 reason_parts.append("known service")
             
-            # Method 2: Network symbols + init script reference (medium-high confidence)
-            # REMOVED: Simple *d name pattern heuristic (causes too many false positives)
+            # Check properties for other methods
             if not is_daemon:
                 filepath = self.target / binary.path
                 has_network = self._has_network_symbols(filepath)
                 in_init = self._is_referenced_in_init(filename)
+                ends_with_d = filename_lower.endswith("d") and len(filename_lower) > 3
                 
-                if has_network and in_init:
+                # Method 2: *d + network symbols (MEDIUM confidence)
+                if ends_with_d and has_network:
+                    is_daemon = True
+                    reason_parts.append("daemon name (*d)")
+                    reason_parts.append("network symbols")
+                    risk = "MEDIUM"
+                
+                # Method 3: *d + init script (MEDIUM confidence)
+                elif ends_with_d and in_init:
+                    is_daemon = True
+                    reason_parts.append("daemon name (*d)")
+                    reason_parts.append("init script")
+                    risk = "MEDIUM"
+                
+                # Method 4: network + init (MEDIUM confidence)
+                elif has_network and in_init:
                     is_daemon = True
                     reason_parts.append("network symbols")
                     reason_parts.append("init script")
                     risk = "MEDIUM"
-                elif has_network and filename_lower.endswith("d") and len(filename_lower) > 4:
-                    # Only use *d pattern if network symbols are present
-                    # Exclude common non-daemon patterns
-                    non_daemons = {
-                        "systemd", "udevd", "lvmetad", "kmod", "modload",
-                        "chmod", "chgrp", "chown", "find", "sed", "awk",
-                        "head", "tail", "fold", "expand", "unexpand",
-                        "bind", "send", "read", "unload", "reload"
-                    }
-                    if filename_lower not in non_daemons:
+                
+                # Method 5: Just *d pattern with daemon-like name (LOW confidence)
+                elif ends_with_d and len(filename_lower) > 4:
+                    # Look for daemon-like patterns in name
+                    daemon_patterns = ["serv", "daemon", "agent", "proxy", "server", "listen", "mgr", "mgmt"]
+                    if any(p in filename_lower for p in daemon_patterns):
                         is_daemon = True
-                        reason_parts.append("network symbols")
                         reason_parts.append("daemon name pattern")
                         risk = "LOW"
 
@@ -2577,6 +2690,10 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 .ci b{display:block}.cp{font-size:10px;color:var(--dm);display:block}.cm{font-size:10px;color:var(--bad)}
 .tools{display:flex;flex-wrap:wrap;gap:8px}.tool{background:var(--bd);padding:4px 10px;font-size:10px}
 .tbl-wrap{overflow-x:auto;display:block}.tbl-scroll{max-height:500px;overflow-y:auto;display:block}
+.search-box{margin-bottom:10px;display:flex;gap:8px;align-items:center}
+.search-box input{background:var(--bd);border:1px solid var(--bd);color:var(--tx);padding:6px 10px;font-size:11px;font-family:inherit;width:200px}
+.search-box button{background:var(--bd);border:1px solid var(--bd);color:var(--tx);padding:6px 12px;font-size:10px;cursor:pointer}
+.search-box button:hover{background:#333}
 .aslr-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:15px}
 .aslr-stat{background:var(--bd);padding:12px;text-align:center;border-radius:4px}
 .aslr-stat-value{font-size:24px;font-weight:600;color:var(--ok)}
@@ -2646,7 +2763,11 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 {f'<div class="card"><div class="card-title">Dependency Risks ({len(result.dependency_risks)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Library</th><th>Issue</th><th>Used By</th></tr></thead><tbody>{dep_rows}</tbody></table></div></div>' if result.dependency_risks else ''}
 
 <div class="card"><div class="card-title">Binary Analysis ({len(result.binaries)})</div>
-<div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Binary</th><th>NX</th><th>Canary</th><th>PIE</th><th>RELRO</th><th>Fortify</th><th>Strip</th><th>SClash</th><th>CFI</th><th>TXREL</th><th>RPATH</th><th>Conf</th></tr></thead>
+<div class="search-box"><input type="text" id="binSearch" placeholder="Search binaries..." onkeyup="filterTable('binSearch', 'binTable')">
+<button onclick="filterByClass('binTable', 'rb')">Insecure</button>
+<button onclick="filterByClass('binTable', 'rw')">Partial</button>
+<button onclick="filterByClass('binTable', '')">All</button></div>
+<div class="tbl-wrap tbl-scroll"><table id="binTable"><thead><tr><th>Binary</th><th>NX</th><th>Canary</th><th>PIE</th><th>RELRO</th><th>Fortify</th><th>Strip</th><th>SClash</th><th>CFI</th><th>TXREL</th><th>RPATH</th><th>Conf</th></tr></thead>
 <tbody>{binary_rows}</tbody></table></div></div>
 
 {f'<div class="card"><div class="card-title">Banned Functions ({len(result.banned_functions)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Function</th><th>Location</th><th>Alternative</th><th>Severity</th><th>Compliance</th></tr></thead><tbody>{banned_rows}</tbody></table></div></div>' if result.banned_functions else ''}
@@ -2664,9 +2785,40 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 </div>
 
 <div class="card"><div class="card-title">Tools Used</div>
-<div class="tools">{" ".join(f'<span class="tool">{n}: {c}</span>' for n, c in result.tools.items())}</div>
+<div class="tools">{" ".join(f'<span class="tool">{esc(n)}: {esc(c)}</span>' for n, c in result.tools.items())}</div>
 </div>
-</div></body></html>'''
+</div>
+<script>
+function filterTable(inputId, tableId) {{
+  var input = document.getElementById(inputId);
+  var filter = input.value.toLowerCase();
+  var table = document.getElementById(tableId);
+  var rows = table.getElementsByTagName("tr");
+  for (var i = 1; i < rows.length; i++) {{
+    var cells = rows[i].getElementsByTagName("td");
+    var match = false;
+    for (var j = 0; j < cells.length; j++) {{
+      if (cells[j].textContent.toLowerCase().indexOf(filter) > -1) {{
+        match = true;
+        break;
+      }}
+    }}
+    rows[i].style.display = match ? "" : "none";
+  }}
+}}
+function filterByClass(tableId, className) {{
+  var table = document.getElementById(tableId);
+  var rows = table.getElementsByTagName("tr");
+  for (var i = 1; i < rows.length; i++) {{
+    if (className === "") {{
+      rows[i].style.display = "";
+    }} else {{
+      rows[i].style.display = rows[i].classList.contains(className) ? "" : "none";
+    }}
+  }}
+}}
+</script>
+</body></html>'''
 
     output_path.write_text(html, encoding="utf-8")
 
@@ -2780,7 +2932,7 @@ def generate_json_report(result: ScanResult, output_path: Path):
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="HardenCheck v1.2.1 - Firmware Binary Security Analyzer with ASLR Entropy Analysis",
+        description="HardenCheck v1.0.0 - Firmware Binary Security Analyzer with ASLR Entropy Analysis",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
