@@ -2756,11 +2756,11 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 
 {aslr_summary_html}
 
-{f'<div class="card"><div class="card-title">ASLR Entropy Analysis ({len(binaries_with_aslr)} PIE binaries)</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Binary</th><th>Arch</th><th>Bits</th><th>PIE</th><th>Max</th><th>Effective</th><th>Rating</th><th>TEXTREL</th><th>Issues</th></tr></thead><tbody>{aslr_rows}</tbody></table></div></div>' if binaries_with_aslr else ''}
+{f'<div class="card"><div class="card-title">ASLR Entropy Analysis ({len(binaries_with_aslr)} PIE binaries)</div><div class="search-box"><input type="text" id="aslrSearch" placeholder="Search binaries..." onkeyup="filterTable(\'aslrSearch\', \'aslrTable\')"><button onclick="filterByRating(\'aslrTable\', \'Weak\')">Weak</button><button onclick="filterByRating(\'aslrTable\', \'Ineffective\')">Ineffective</button><button onclick="filterByRating(\'aslrTable\', \'\')">All</button></div><div class="tbl-wrap tbl-scroll"><table id="aslrTable"><thead><tr><th>Binary</th><th>Arch</th><th>Bits</th><th>PIE</th><th>Max</th><th>Effective</th><th>Rating</th><th>TEXTREL</th><th>Issues</th></tr></thead><tbody>{aslr_rows}</tbody></table></div></div>' if binaries_with_aslr else ''}
 
-{f'<div class="card"><div class="card-title">Daemons &amp; Services ({len(result.daemons)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Risk</th><th>Service</th><th>Binary</th><th>Version</th><th>Path</th><th>Status</th><th>Detection</th></tr></thead><tbody>{daemon_rows}</tbody></table></div></div>' if result.daemons else ''}
+{f'<div class="card"><div class="card-title">Daemons &amp; Services ({len(result.daemons)})</div><div class="search-box"><input type="text" id="daemonSearch" placeholder="Search daemons..." onkeyup="filterTable(\'daemonSearch\', \'daemonTable\')"><button onclick="filterByRisk(\'daemonTable\', \'CRITICAL\')">Critical</button><button onclick="filterByRisk(\'daemonTable\', \'HIGH\')">High</button><button onclick="filterByRisk(\'daemonTable\', \'\')">All</button></div><div class="tbl-wrap tbl-scroll"><table id="daemonTable"><thead><tr><th>Risk</th><th>Service</th><th>Binary</th><th>Version</th><th>Path</th><th>Status</th><th>Detection</th></tr></thead><tbody>{daemon_rows}</tbody></table></div></div>' if result.daemons else ''}
 
-{f'<div class="card"><div class="card-title">Dependency Risks ({len(result.dependency_risks)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Library</th><th>Issue</th><th>Used By</th></tr></thead><tbody>{dep_rows}</tbody></table></div></div>' if result.dependency_risks else ''}
+{f'<div class="card"><div class="card-title">Dependency Risks ({len(result.dependency_risks)})</div><div class="search-box"><input type="text" id="depSearch" placeholder="Search dependencies..." onkeyup="filterTable(\'depSearch\', \'depTable\')"></div><div class="tbl-wrap tbl-scroll"><table id="depTable"><thead><tr><th>Library</th><th>Issue</th><th>Used By</th></tr></thead><tbody>{dep_rows}</tbody></table></div></div>' if result.dependency_risks else ''}
 
 <div class="card"><div class="card-title">Binary Analysis ({len(result.binaries)})</div>
 <div class="search-box"><input type="text" id="binSearch" placeholder="Search binaries..." onkeyup="filterTable('binSearch', 'binTable')">
@@ -2770,7 +2770,7 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 <div class="tbl-wrap tbl-scroll"><table id="binTable"><thead><tr><th>Binary</th><th>NX</th><th>Canary</th><th>PIE</th><th>RELRO</th><th>Fortify</th><th>Strip</th><th>SClash</th><th>CFI</th><th>TXREL</th><th>RPATH</th><th>Conf</th></tr></thead>
 <tbody>{binary_rows}</tbody></table></div></div>
 
-{f'<div class="card"><div class="card-title">Banned Functions ({len(result.banned_functions)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Function</th><th>Location</th><th>Alternative</th><th>Severity</th><th>Compliance</th></tr></thead><tbody>{banned_rows}</tbody></table></div></div>' if result.banned_functions else ''}
+{f'<div class="card"><div class="card-title">Banned Functions ({len(result.banned_functions)})</div><div class="search-box"><input type="text" id="bannedSearch" placeholder="Search functions..." onkeyup="filterTable(\'bannedSearch\', \'bannedTable\')"><button onclick="filterBySeverity(\'bannedTable\', \'CRITICAL\')">Critical</button><button onclick="filterBySeverity(\'bannedTable\', \'HIGH\')">High</button><button onclick="filterBySeverity(\'bannedTable\', \'\')">All</button></div><div class="tbl-wrap tbl-scroll"><table id="bannedTable"><thead><tr><th>Function</th><th>Location</th><th>Alternative</th><th>Severity</th><th>Compliance</th></tr></thead><tbody>{banned_rows}</tbody></table></div></div>' if result.banned_functions else ''}
 
 {f'<div class="card"><div class="card-title">Hardcoded Credentials ({len(result.credentials)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Location</th><th>Pattern</th><th>Context</th></tr></thead><tbody>{cred_rows}</tbody></table></div></div>' if result.credentials else ''}
 
@@ -2814,6 +2814,42 @@ function filterByClass(tableId, className) {{
       rows[i].style.display = "";
     }} else {{
       rows[i].style.display = rows[i].classList.contains(className) ? "" : "none";
+    }}
+  }}
+}}
+function filterByRisk(tableId, risk) {{
+  var table = document.getElementById(tableId);
+  var rows = table.getElementsByTagName("tr");
+  for (var i = 1; i < rows.length; i++) {{
+    var cell = rows[i].getElementsByTagName("td")[0];
+    if (risk === "" || (cell && cell.textContent.indexOf(risk) > -1)) {{
+      rows[i].style.display = "";
+    }} else {{
+      rows[i].style.display = "none";
+    }}
+  }}
+}}
+function filterBySeverity(tableId, sev) {{
+  var table = document.getElementById(tableId);
+  var rows = table.getElementsByTagName("tr");
+  for (var i = 1; i < rows.length; i++) {{
+    var cell = rows[i].getElementsByTagName("td")[3];
+    if (sev === "" || (cell && cell.textContent.indexOf(sev) > -1)) {{
+      rows[i].style.display = "";
+    }} else {{
+      rows[i].style.display = "none";
+    }}
+  }}
+}}
+function filterByRating(tableId, rating) {{
+  var table = document.getElementById(tableId);
+  var rows = table.getElementsByTagName("tr");
+  for (var i = 1; i < rows.length; i++) {{
+    var cell = rows[i].getElementsByTagName("td")[6];
+    if (rating === "" || (cell && cell.textContent.indexOf(rating) > -1)) {{
+      rows[i].style.display = "";
+    }} else {{
+      rows[i].style.display = "none";
     }}
   }}
 }}
@@ -2932,7 +2968,7 @@ def generate_json_report(result: ScanResult, output_path: Path):
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="HardenCheck v1.0.0 - Firmware Binary Security Analyzer with ASLR Entropy Analysis",
+        description="HardenCheck v1.0.0.1 - Firmware Binary Security Analyzer with ASLR Entropy Analysis",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
