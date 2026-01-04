@@ -2,7 +2,7 @@
 """
 HardenCheck - Firmware Binary Security Analyzer
 Author: v33ru (Mr-IoT) | github.com/v33ru | IOTSRG
-Version: 1.0.0 - Security fixes + improved detection accuracy
+Version: 1.0 - Firmware Binary Security Analyzer
 """
 
 import os
@@ -24,7 +24,7 @@ from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-VERSION = "1.0.0"
+VERSION = "1.0"
 
 # Secure subprocess environment - restrict PATH to standard locations
 SECURE_ENV = {
@@ -37,15 +37,15 @@ SECURE_ENV = {
 MAX_RECURSION_DEPTH = 20
 
 BANNER = r"""
-    ╔═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╗
-    ║●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │●│●║
-    ╟─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─╢
-    ║      ██   H A R D E N C H E C K   ██              ║
-    ║      ██   Firmware Security Tool  ██              ║
-    ║      ██   v1.0 | @v33ru | IOTSRG  ██              ║
-    ╟─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─╢
-    ║●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │●│●║
-    ╚═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╝
+    ╔═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╗
+    ║●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●║
+    ╟─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─╢
+    ║      ██  H A R D E N C H E C K  ██      ║
+    ║      ██  Firmware Security Tool ██      ║
+    ║      ██  v1.0 | @v33ru | IOTSRG ██      ║
+    ╟─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─╢
+    ║●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │ ║
+    ╚═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╝
 """
 
 
@@ -849,11 +849,19 @@ class ASLREntropyAnalyzer:
 class HardenCheck:
     """Firmware security analyzer."""
 
-    def __init__(self, target: Path, threads: int = 4, verbose: bool = False):
-        """Initialize scanner."""
+    def __init__(self, target: Path, threads: int = 4, verbose: bool = False, extended: bool = False):
+        """Initialize scanner.
+        
+        Args:
+            target: Path to firmware directory
+            threads: Number of analysis threads
+            verbose: Enable verbose output
+            extended: Enable extended checks (Stack Clash, CFI)
+        """
         self.target = Path(target).resolve()
         self.threads = min(max(threads, 1), 16)
         self.verbose = verbose
+        self.extended = extended
         self.tools = self._detect_tools()
         self.aslr_analyzer = ASLREntropyAnalyzer(self.tools)
 
@@ -1603,8 +1611,14 @@ class HardenCheck:
         if hardening_data["fortify"] is None:
             unknown_fields.append("fortify")
         
-        analysis.stack_clash = hardening_data["stack_clash"]
-        analysis.cfi = hardening_data["cfi"]
+        # Stack Clash and CFI only checked in extended mode
+        if self.extended:
+            analysis.stack_clash = hardening_data["stack_clash"]
+            analysis.cfi = hardening_data["cfi"]
+        else:
+            analysis.stack_clash = "skipped"
+            analysis.cfi = "skipped"
+        
         analysis.textrel = scanelf_data["textrel"]
 
         # Store tracking info
@@ -2402,6 +2416,13 @@ def classify_binary(binary: BinaryAnalysis) -> str:
     if binary.nx is False or binary.canary is False:
         return "INSECURE"
 
+    # Check if extended mode (stack_clash/cfi checked) or not
+    extended_ok = True
+    if binary.stack_clash not in ("yes", "skipped"):
+        extended_ok = False
+    if binary.cfi not in ("yes", "skipped"):
+        extended_ok = False
+
     all_protected = (
         binary.nx is True and
         binary.canary is True and
@@ -2409,8 +2430,7 @@ def classify_binary(binary: BinaryAnalysis) -> str:
         binary.relro == "full" and
         binary.fortify is True and
         binary.stripped is True and
-        binary.stack_clash == "yes" and
-        binary.cfi == "yes" and
+        extended_ok and
         not binary.textrel and
         not binary.rpath
     )
@@ -2502,7 +2522,7 @@ def esc(value) -> str:
     return html_module.escape(str(value))
 
 
-def generate_html_report(result: ScanResult, output_path: Path, slim: bool = False):
+def generate_html_report(result: ScanResult, output_path: Path, slim: bool = False, extended: bool = False):
     """Generate HTML report with ASLR entropy analysis section.
     
     All user-controlled content is HTML-escaped to prevent XSS attacks.
@@ -2543,6 +2563,7 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
             elif value == "yes": return '<td class="ok">Y</td>'
             elif value == "no": return '<td class="bad">N</td>'
             elif value == "unknown": return '<td class="wrn">?</td>'
+            elif value == "skipped": return ''  # Hidden column
             elif value == "full": return '<td class="ok">full</td>'
             elif value == "partial": return '<td class="wrn">partial</td>'
             elif value == "none": return '<td class="bad">none</td>'
@@ -2550,7 +2571,9 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
 
         binary_rows += f'<tr class="{row_class}"><td class="fn">{esc(binary.filename)}</td>'
         binary_rows += cell(binary.nx) + cell(binary.canary) + cell(binary.pie) + cell(binary.relro)
-        binary_rows += cell(binary.fortify) + cell(binary.stripped) + cell(binary.stack_clash) + cell(binary.cfi)
+        binary_rows += cell(binary.fortify) + cell(binary.stripped)
+        if extended:
+            binary_rows += cell(binary.stack_clash) + cell(binary.cfi)
         binary_rows += f'<td class="{"bad" if binary.textrel else "ok"}">{"-" if not binary.textrel else "!"}</td>'
         binary_rows += f'<td class="{"bad" if binary.rpath else "ok"}">{esc(binary.rpath[:12]) if binary.rpath else "-"}</td>'
         binary_rows += f"<td>{binary.confidence}%</td></tr>"
@@ -2750,8 +2773,8 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 {progress_bar("Full RELRO", relro_count, total_binaries)}
 {progress_bar("Fortify", fortify_count, total_binaries)}
 {progress_bar("Stripped", stripped_count, total_binaries)}
-{progress_bar("Stack Clash", stack_clash_count, total_binaries)}
-{progress_bar("CFI", cfi_count, total_binaries)}
+{progress_bar("Stack Clash", stack_clash_count, total_binaries) if extended else ''}
+{progress_bar("CFI", cfi_count, total_binaries) if extended else ''}
 </div>
 
 {aslr_summary_html}
@@ -2767,7 +2790,7 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 <button onclick="filterByClass('binTable', 'rb')">Insecure</button>
 <button onclick="filterByClass('binTable', 'rw')">Partial</button>
 <button onclick="filterByClass('binTable', '')">All</button></div>
-<div class="tbl-wrap tbl-scroll"><table id="binTable"><thead><tr><th>Binary</th><th>NX</th><th>Canary</th><th>PIE</th><th>RELRO</th><th>Fortify</th><th>Strip</th><th>SClash</th><th>CFI</th><th>TXREL</th><th>RPATH</th><th>Conf</th></tr></thead>
+<div class="tbl-wrap tbl-scroll"><table id="binTable"><thead><tr><th>Binary</th><th>NX</th><th>Canary</th><th>PIE</th><th>RELRO</th><th>Fortify</th><th>Strip</th>{"<th>SClash</th><th>CFI</th>" if extended else ""}<th>TXREL</th><th>RPATH</th><th>Conf</th></tr></thead>
 <tbody>{binary_rows}</tbody></table></div></div>
 
 {f'<div class="card"><div class="card-title">Banned Functions ({len(result.banned_functions)})</div><div class="search-box"><input type="text" id="bannedSearch" placeholder="Search functions..." onkeyup="filterTable(\'bannedSearch\', \'bannedTable\')"><button onclick="filterBySeverity(\'bannedTable\', \'CRITICAL\')">Critical</button><button onclick="filterBySeverity(\'bannedTable\', \'HIGH\')">High</button><button onclick="filterBySeverity(\'bannedTable\', \'\')">All</button></div><div class="tbl-wrap tbl-scroll"><table id="bannedTable"><thead><tr><th>Function</th><th>Location</th><th>Alternative</th><th>Severity</th><th>Compliance</th></tr></thead><tbody>{banned_rows}</tbody></table></div></div>' if result.banned_functions else ''}
@@ -2968,7 +2991,7 @@ def generate_json_report(result: ScanResult, output_path: Path):
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="HardenCheck v1.0.0.1 - Firmware Binary Security Analyzer with ASLR Entropy Analysis",
+        description="HardenCheck v1.0 - Firmware Binary Security Analyzer with ASLR Entropy Analysis",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -2997,6 +3020,8 @@ Scoring Model:
                         help="Also generate JSON report")
     parser.add_argument("--slim", action="store_true",
                         help="Generate slim HTML report (no CSS, smaller size)")
+    parser.add_argument("--extended", action="store_true",
+                        help="Enable extended checks (Stack Clash, CFI) - requires hardening-check tool")
     parser.add_argument("--version", action="version",
                         version=f"HardenCheck v{VERSION}")
 
@@ -3011,11 +3036,11 @@ Scoring Model:
         sys.exit(1)
 
     try:
-        scanner = HardenCheck(target, threads=args.threads, verbose=args.verbose)
+        scanner = HardenCheck(target, threads=args.threads, verbose=args.verbose, extended=args.extended)
         result = scanner.scan()
 
         output_path = Path(args.output)
-        generate_html_report(result, output_path, slim=args.slim)
+        generate_html_report(result, output_path, slim=args.slim, extended=args.extended)
         print(f"[+] HTML Report: {output_path}")
 
         if args.json:
