@@ -1,0 +1,118 @@
+flowchart TB
+    subgraph INPUT["📁 INPUT"]
+        A[("🎯 Target Directory<br/>(Extracted Firmware)")]
+    end
+
+    subgraph INIT["⚙️ INITIALIZATION"]
+        B["Detect Available Tools<br/>rabin2, readelf, hardening-check,<br/>scanelf, file, strings, openssl"]
+        C["Initialize Thread Pool<br/>(1-16 threads)"]
+        D["Set Resource Limits<br/>CPU: 60s | RAM: 512MB | File: 10MB"]
+    end
+
+    subgraph DISCOVERY["🔍 FILE DISCOVERY"]
+        E["Walk Directory Tree"]
+        F{"File Type?"}
+        G["ELF Binary<br/>(Magic: 0x7fELF)"]
+        H["Source Code<br/>(.c, .cpp, .h)"]
+        I["Config Files<br/>(.conf, .cfg, .ini)"]
+        J["Handle Symlinks<br/>(Inode Dedup)"]
+    end
+
+    subgraph PROFILE["📋 FIRMWARE PROFILE"]
+        K["Detect Architecture<br/>x86, ARM, MIPS, etc."]
+        L["Detect Firmware Type<br/>OpenWrt, DD-WRT, Buildroot, Yocto"]
+        M["Detect Libc<br/>glibc, musl, uClibc"]
+        N["Find Setuid/World-Writable"]
+    end
+
+    subgraph BINARY_ANALYSIS["🔬 BINARY ANALYSIS (Per Binary)"]
+        O["Classify Binary Type<br/>Executable | Shared Lib | Kernel Module"]
+        
+        subgraph TOOLS["Multi-Tool Analysis"]
+            P1["rabin2<br/>NX, Canary, PIE, RELRO"]
+            P2["readelf<br/>NX, Canary, PIE, RELRO, Stripped"]
+            P3["hardening-check<br/>Fortify, Stack Clash, CFI"]
+            P4["scanelf<br/>TEXTREL detection"]
+        end
+        
+        Q["Merge Results<br/>+ Confidence Scoring"]
+        R{"PIE Binary?"}
+        S["ASLR Entropy Analysis<br/>Parse ELF Headers<br/>Calculate Effective Entropy<br/>Rate: Excellent→Ineffective"]
+    end
+
+    subgraph DAEMON_DETECTION["👹 DAEMON DETECTION"]
+        T["Check KNOWN_SERVICES<br/>(95+ services)"]
+        U["Check Network Symbols<br/>socket, bind, listen, accept"]
+        V["Check Init Scripts<br/>/etc/init.d, /etc/rc.d"]
+        W["Apply Detection Methods<br/>1. Known name → HIGH<br/>2. *d + network → MEDIUM<br/>3. *d + init → MEDIUM<br/>4. network + init → MEDIUM<br/>5. *d + pattern → LOW"]
+    end
+
+    subgraph VULN_SCANNING["🚨 VULNERABILITY SCANNING"]
+        X["Banned Functions<br/>gets, strcpy, sprintf, system"]
+        Y["Hardcoded Credentials<br/>password=, API keys, tokens"]
+        Z["Certificate/Key Files<br/>.pem, .key, .p12, .crt"]
+        AA["Config Issues<br/>PermitRootLogin, empty passwords"]
+        AB["Dependency Risks<br/>Insecure shared libraries"]
+    end
+
+    subgraph SCORING["📊 SCORING & GRADING"]
+        AC["Calculate Per-Binary Score<br/>NX=15, Canary=15, PIE=15<br/>RELRO=15, Fortify=10<br/>StackClash=10, CFI=10<br/>Stripped=5, NoTEXTREL=5, NoRPATH=5"]
+        AD["Classify Binary<br/>SECURED | PARTIAL | INSECURE"]
+        AE["Calculate Overall Grade<br/>A≥90 | B≥80 | C≥70 | D≥60 | F<60"]
+    end
+
+    subgraph OUTPUT["📤 OUTPUT GENERATION"]
+        AF["Generate HTML Report<br/>Dark theme, Search/Filter,<br/>Progress bars, Tables"]
+        AG["Generate JSON Report<br/>(Optional --json)"]
+        AH["Console Summary<br/>Grade, Stats, Duration"]
+    end
+
+    subgraph REPORT_SECTIONS["📑 HTML REPORT SECTIONS"]
+        R1["Security Grade"]
+        R2["Firmware Profile"]
+        R3["Protection Coverage"]
+        R4["ASLR Entropy Analysis"]
+        R5["Daemons & Services"]
+        R6["Binary Analysis Table"]
+        R7["Banned Functions"]
+        R8["Credentials & Certs"]
+        R9["Config Issues"]
+        R10["Classification"]
+    end
+
+    A --> B --> C --> D --> E
+    E --> F
+    F -->|ELF| G --> J
+    F -->|Source| H
+    F -->|Config| I
+    J --> K --> L --> M --> N
+
+    N --> O
+    O --> P1 & P2 & P3 & P4
+    P1 & P2 & P3 & P4 --> Q
+    Q --> R
+    R -->|Yes| S
+    R -->|No| T
+    S --> T
+
+    T --> U --> V --> W
+
+    W --> X --> Y --> Z --> AA --> AB
+
+    AB --> AC --> AD --> AE
+
+    AE --> AF --> AG --> AH
+
+    AF --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10
+
+    style INPUT fill:#1a1a2e,stroke:#00ff88,color:#fff
+    style INIT fill:#16213e,stroke:#00ff88,color:#fff
+    style DISCOVERY fill:#0f3460,stroke:#00ff88,color:#fff
+    style PROFILE fill:#1a1a2e,stroke:#00ff88,color:#fff
+    style BINARY_ANALYSIS fill:#16213e,stroke:#00ff88,color:#fff
+    style DAEMON_DETECTION fill:#0f3460,stroke:#00ff88,color:#fff
+    style VULN_SCANNING fill:#1a1a2e,stroke:#00ff88,color:#fff
+    style SCORING fill:#16213e,stroke:#00ff88,color:#fff
+    style OUTPUT fill:#0f3460,stroke:#00ff88,color:#fff
+    style REPORT_SECTIONS fill:#1a1a2e,stroke:#00ff88,color:#fff
+    style TOOLS fill:#252550,stroke:#ffd700,color:#fff
