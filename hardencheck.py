@@ -117,7 +117,13 @@ class FirmwareProfile:
     fw_type: str = "Unknown"
     libc: str = "Unknown"
     kernel: str = "Unknown"
+    filesystem: str = "Unknown"
+    compression: str = "Unknown"
+    bootloader: str = "Unknown"
+    init_system: str = "Unknown"
+    package_manager: str = "Unknown"
     total_files: int = 0
+    total_size_mb: float = 0.0
     elf_binaries: int = 0
     shared_libs: int = 0
     shell_scripts: int = 0
@@ -1066,6 +1072,13 @@ class HardenCheck:
                 break
             dirs[:] = dirs[:20]
 
+        profile.filesystem = self._detect_filesystem()
+        profile.compression = self._detect_compression()
+        profile.bootloader = self._detect_bootloader()
+        profile.init_system = self._detect_init_system()
+        profile.package_manager = self._detect_package_manager()
+        profile.total_size_mb = self._calculate_total_size()
+
         profile.elf_binaries = len([b for b in binaries if b[1] == BinaryType.EXECUTABLE])
         profile.shared_libs = len([b for b in binaries if b[1] == BinaryType.SHARED_LIB])
 
@@ -1103,6 +1116,225 @@ class HardenCheck:
                     pass
 
         return profile
+
+    def _detect_filesystem(self) -> str:
+        """Detect filesystem type from firmware structure."""
+        fs_indicators = {
+            "SquashFS": [
+                ("hsqs", b"hsqs"),
+                ("sqsh", b"sqsh"),
+                ("sqlz", b"sqlz"),
+            ],
+            "JFFS2": [
+                (".jffs2", None),
+                ("jffs2", None),
+            ],
+            "UBIFS": [
+                ("ubifs", None),
+                (".ubi", None),
+            ],
+            "CramFS": [
+                ("cramfs", None),
+            ],
+            "YAFFS": [
+                ("yaffs", None),
+            ],
+            "Ext4": [
+                ("lost+found", None),
+            ],
+            "ROMFS": [
+                ("-rom1fs-", b"-rom1fs-"),
+            ],
+        }
+        
+        detected = []
+        
+        for root, dirs, files in os.walk(self.target):
+            root_lower = root.lower()
+            for fs_type, indicators in fs_indicators.items():
+                for indicator, magic in indicators:
+                    if indicator in root_lower or indicator in [f.lower() for f in files]:
+                        if fs_type not in detected:
+                            detected.append(fs_type)
+            dirs[:] = dirs[:30]
+            if len(detected) >= 3:
+                break
+        
+        fstab_path = self.target / "etc" / "fstab"
+        if fstab_path.exists():
+            content = safe_read_file(fstab_path)
+            if content:
+                fs_types = ["squashfs", "jffs2", "ubifs", "cramfs", "yaffs", "ext4", "ext3", "ext2", "vfat", "tmpfs", "nfs"]
+                for fs in fs_types:
+                    if fs in content.lower() and fs.upper() not in [d.upper() for d in detected]:
+                        detected.append(fs.upper() if fs not in ["ext4", "ext3", "ext2", "vfat", "tmpfs", "nfs"] else fs)
+        
+        if (self.target / "lost+found").exists():
+            if "Ext4" not in detected and "ext4" not in detected:
+                detected.append("Ext4")
+        
+        return ", ".join(detected[:3]) if detected else "Unknown"
+
+    def _detect_compression(self) -> str:
+        """Detect compression algorithms used in firmware."""
+        compression_markers = {
+            "LZMA": [".lzma", "lzma"],
+            "XZ": [".xz", "xz-utils"],
+            "GZIP": [".gz", "gzip"],
+            "BZIP2": [".bz2", "bzip2"],
+            "LZ4": [".lz4", "lz4"],
+            "ZSTD": [".zst", ".zstd", "zstd"],
+            "LZO": [".lzo", "lzop"],
+        }
+        
+        detected = []
+        
+        for root, dirs, files in os.walk(self.target):
+            for filename in files:
+                name_lower = filename.lower()
+                for comp_type, markers in compression_markers.items():
+                    if any(marker in name_lower for marker in markers):
+                        if comp_type not in detected:
+                            detected.append(comp_type)
+            dirs[:] = dirs[:20]
+            if len(detected) >= 4:
+                break
+        
+        for comp_tool in ["gzip", "bzip2", "xz", "lzma", "lz4", "zstd", "lzop"]:
+            tool_path = self.target / "usr" / "bin" / comp_tool
+            tool_path2 = self.target / "bin" / comp_tool
+            if tool_path.exists() or tool_path2.exists():
+                comp_name = comp_tool.upper()
+                if comp_name == "LZOP":
+                    comp_name = "LZO"
+                if comp_name not in detected:
+                    detected.append(comp_name)
+        
+        return ", ".join(detected[:4]) if detected else "Unknown"
+
+    def _detect_bootloader(self) -> str:
+        """Detect bootloader type."""
+        bootloader_indicators = {
+            "U-Boot": ["u-boot", "uboot", "fw_printenv", "fw_setenv"],
+            "GRUB": ["grub", "grub.cfg", "grub.conf"],
+            "GRUB2": ["grub2", "grub2.cfg"],
+            "Barebox": ["barebox"],
+            "RedBoot": ["redboot"],
+            "CFE": ["cfe", "cferam"],
+            "Das U-Boot": ["das-u-boot"],
+            "PMON": ["pmon"],
+            "OpenWrt Bootloader": ["breed", "pb-boot"],
+        }
+        
+        detected = []
+        
+        for root, dirs, files in os.walk(self.target):
+            all_names = [f.lower() for f in files] + [d.lower() for d in dirs]
+            for bl_type, indicators in bootloader_indicators.items():
+                for indicator in indicators:
+                    if any(indicator in name for name in all_names):
+                        if bl_type not in detected:
+                            detected.append(bl_type)
+                            break
+            dirs[:] = dirs[:30]
+            if detected:
+                break
+        
+        uboot_env = self.target / "etc" / "fw_env.config"
+        if uboot_env.exists() and "U-Boot" not in detected:
+            detected.append("U-Boot")
+        
+        return ", ".join(detected) if detected else "Unknown"
+
+    def _detect_init_system(self) -> str:
+        """Detect init system type."""
+        if (self.target / "lib" / "systemd").exists() or (self.target / "etc" / "systemd").exists():
+            return "systemd"
+        
+        if (self.target / "etc" / "init.d").exists():
+            rcS = self.target / "etc" / "init.d" / "rcS"
+            if rcS.exists():
+                content = safe_read_file(rcS)
+                if content and "procd" in content:
+                    return "procd (OpenWrt)"
+        
+        if (self.target / "sbin" / "procd").exists():
+            return "procd (OpenWrt)"
+        
+        if (self.target / "etc" / "inittab").exists():
+            content = safe_read_file(self.target / "etc" / "inittab")
+            if content:
+                if "sysinit" in content or "::respawn:" in content:
+                    return "BusyBox init"
+        
+        if (self.target / "sbin" / "openrc-run").exists() or (self.target / "etc" / "runlevels").exists():
+            return "OpenRC"
+        
+        if (self.target / "etc" / "runit").exists() or (self.target / "sbin" / "runit").exists():
+            return "runit"
+        
+        if (self.target / "etc" / "s6").exists() or (self.target / "sbin" / "s6-svscan").exists():
+            return "s6"
+        
+        if (self.target / "etc" / "init.d").exists():
+            return "SysVinit"
+        
+        if (self.target / "etc" / "inittab").exists():
+            return "init (generic)"
+        
+        return "Unknown"
+
+    def _detect_package_manager(self) -> str:
+        """Detect package management system."""
+        package_managers = {
+            "opkg": ["opkg", "opkg.conf", "/var/opkg-lists"],
+            "dpkg/apt": ["dpkg", "apt", "/var/lib/dpkg"],
+            "rpm": ["rpm", "/var/lib/rpm"],
+            "ipkg": ["ipkg", "ipkg.conf"],
+            "apk": ["apk", "/lib/apk"],
+            "pacman": ["pacman", "/var/lib/pacman"],
+            "Entware": ["entware", "/opt/etc/opkg.conf"],
+        }
+        
+        for pm_name, indicators in package_managers.items():
+            for indicator in indicators:
+                if indicator.startswith("/"):
+                    check_path = self.target / indicator.lstrip("/")
+                    if check_path.exists():
+                        return pm_name
+                else:
+                    bin_paths = [
+                        self.target / "usr" / "bin" / indicator,
+                        self.target / "bin" / indicator,
+                        self.target / "sbin" / indicator,
+                        self.target / "usr" / "sbin" / indicator,
+                    ]
+                    for bin_path in bin_paths:
+                        if bin_path.exists():
+                            return pm_name
+                    
+                    etc_path = self.target / "etc" / indicator
+                    if etc_path.exists():
+                        return pm_name
+        
+        return "Unknown"
+
+    def _calculate_total_size(self) -> float:
+        """Calculate total size of firmware in MB."""
+        total_bytes = 0
+        try:
+            for root, dirs, files in os.walk(self.target):
+                for filename in files:
+                    filepath = Path(root) / filename
+                    try:
+                        if not filepath.is_symlink():
+                            total_bytes += filepath.stat().st_size
+                    except (OSError, PermissionError):
+                        pass
+                dirs[:] = [d for d in dirs if not d.startswith(".")]
+        except Exception:
+            pass
+        return round(total_bytes / (1024 * 1024), 2)
 
     def _has_network_symbols(self, filepath: Path) -> bool:
         """Check if binary imports network-related symbols."""
@@ -2121,6 +2353,17 @@ class HardenCheck:
         print(f"      Libc: {profile.libc}")
         if profile.kernel != "Unknown":
             print(f"      Kernel: {profile.kernel}")
+        if profile.filesystem != "Unknown":
+            print(f"      Filesystem: {profile.filesystem}")
+        if profile.compression != "Unknown":
+            print(f"      Compression: {profile.compression}")
+        if profile.bootloader != "Unknown":
+            print(f"      Bootloader: {profile.bootloader}")
+        if profile.init_system != "Unknown":
+            print(f"      Init System: {profile.init_system}")
+        if profile.package_manager != "Unknown":
+            print(f"      Package Mgr: {profile.package_manager}")
+        print(f"      Total Size: {profile.total_size_mb} MB")
         if profile.setuid_files:
             print(f"      Setuid: {len(profile.setuid_files)} files")
         print()
@@ -2604,6 +2847,12 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 <div class="profile-row"><span class="profile-label">Endianness</span><span>{profile.endian}</span></div>
 <div class="profile-row"><span class="profile-label">Libc</span><span>{profile.libc}</span></div>
 <div class="profile-row"><span class="profile-label">Kernel</span><span>{profile.kernel}</span></div>
+<div class="profile-row"><span class="profile-label">Filesystem</span><span>{profile.filesystem}</span></div>
+<div class="profile-row"><span class="profile-label">Compression</span><span>{profile.compression}</span></div>
+<div class="profile-row"><span class="profile-label">Bootloader</span><span>{profile.bootloader}</span></div>
+<div class="profile-row"><span class="profile-label">Init System</span><span>{profile.init_system}</span></div>
+<div class="profile-row"><span class="profile-label">Package Manager</span><span>{profile.package_manager}</span></div>
+<div class="profile-row"><span class="profile-label">Total Size</span><span>{profile.total_size_mb} MB</span></div>
 <div class="profile-row"><span class="profile-label">Total Files</span><span>{profile.total_files}</span></div>
 <div class="profile-row"><span class="profile-label">ELF Binaries</span><span>{profile.elf_binaries}</span></div>
 <div class="profile-row"><span class="profile-label">Shared Libraries</span><span>{profile.shared_libs}</span></div>
@@ -2764,10 +3013,17 @@ def generate_json_report(result: ScanResult, output_path: Path):
             "type": profile.fw_type,
             "libc": profile.libc,
             "kernel": profile.kernel,
+            "filesystem": profile.filesystem,
+            "compression": profile.compression,
+            "bootloader": profile.bootloader,
+            "init_system": profile.init_system,
+            "package_manager": profile.package_manager,
+            "total_size_mb": profile.total_size_mb,
             "total_files": profile.total_files,
             "elf_binaries": profile.elf_binaries,
             "shared_libs": profile.shared_libs,
             "shell_scripts": profile.shell_scripts,
+            "config_files": profile.config_files,
             "setuid_files": profile.setuid_files,
             "world_writable": profile.world_writable
         },
