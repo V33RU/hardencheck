@@ -15,11 +15,10 @@ import subprocess
 import re
 import stat
 import struct
-import math
 import html as html_module
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Tuple, Optional
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -45,7 +44,6 @@ BANNER = r"""
     ║●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │●│●║
     ╚═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╝
 """
-
 
 
 
@@ -239,7 +237,6 @@ class ScanResult:
     config_issues: List[ConfigFinding]
     aslr_summary: Dict = field(default_factory=dict)
     missing_tools: List[str] = field(default_factory=list)
-
 
 
 
@@ -456,7 +453,6 @@ FIRMWARE_MARKERS = {
 
 
 
-
 def safe_read_file(filepath: Path, max_size: int = 1024 * 1024) -> Optional[str]:
     """Safely read file content with size limit."""
     try:
@@ -479,7 +475,6 @@ def safe_read_binary(filepath: Path, max_size: int = 10 * 1024 * 1024) -> Option
         return filepath.read_bytes()
     except (OSError, PermissionError):
         return None
-
 
 
 
@@ -773,7 +768,6 @@ class ASLREntropyAnalyzer:
                 analysis.recommendations.append("Enable FORTIFY_SOURCE as compensating control")
         
         return analysis
-
 
 
 
@@ -2261,7 +2255,6 @@ class HardenCheck:
 
 
 
-
 def classify_binary(binary: BinaryAnalysis) -> str:
     """Classify binary security level.
     
@@ -2375,7 +2368,6 @@ def calculate_grade(binaries: List[BinaryAnalysis]) -> Tuple[str, int]:
         return "D", int(average)
     else:
         return "F", int(average)
-
 
 
 
@@ -2527,13 +2519,13 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
 {f'<div class="aslr-issues"><b>Common Issues:</b><ul>{"".join(f"<li>{k}: {v} binaries</li>" for k, v in list(aslr_summary.get("common_issues", {}).items())[:5])}</ul></div>' if aslr_summary.get("common_issues") else ""}
 </div>'''
 
-    slim_css = """body{font-family:monospace;font-size:12px;padding:10px}
-table{border-collapse:collapse;width:100%}th,td{border:1px solid
-.ok{color:green}.bad{color:red}.wrn{color:orange}
-h1{font-size:16px}h2{font-size:14px}"""
+    slim_css = """body{font-family:monospace;font-size:12px;padding:10px;background:#111;color:#ccc}
+table{border-collapse:collapse;width:100%}th,td{border:1px solid #333;padding:4px}
+.ok{color:#3fb950}.bad{color:#f85149}.wrn{color:#d29922}
+h1{font-size:16px}h2{font-size:14px}.card{background:#161b22;padding:10px;margin:10px 0;border:1px solid #333}"""
     
     full_css = """*{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:
+:root{--bg:#0d1117;--cd:#161b22;--bd:#30363d;--tx:#c9d1d9;--dm:#8b949e;--ok:#3fb950;--bad:#f85149;--wrn:#d29922}
 body{font-family:'Fira Code',monospace;background:var(--bg);color:var(--tx);font-size:12px;padding:20px;line-height:1.5}
 .container{max-width:1600px;margin:0 auto}
 h1{font-size:18px;font-weight:600;margin-bottom:5px}
@@ -2541,7 +2533,7 @@ h1{font-size:18px;font-weight:600;margin-bottom:5px}
 .card{background:var(--cd);border:1px solid var(--bd);padding:15px;margin-bottom:15px}
 .card-title{font-size:13px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--bd)}
 .grade{font-size:48px;font-weight:600;display:inline-block;margin-right:20px}
-.ga{color:var(--ok)}.gb{color:
+.ga{color:var(--ok)}.gb{color:#58a6ff}.gc{color:var(--wrn)}.gd{color:#f0883e}.gf{color:var(--bad)}
 .summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:15px}
 .sum-card{background:var(--cd);border:1px solid var(--bd);padding:12px;text-align:center}
 .sum-card.se{border-color:var(--ok)}.sum-card.pa{border-color:var(--wrn)}.sum-card.in{border-color:var(--bad)}
@@ -2573,15 +2565,15 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 .search-box{margin-bottom:10px;display:flex;gap:8px;align-items:center}
 .search-box input{background:var(--bd);border:1px solid var(--bd);color:var(--tx);padding:6px 10px;font-size:11px;font-family:inherit;width:200px}
 .search-box button{background:var(--bd);border:1px solid var(--bd);color:var(--tx);padding:6px 12px;font-size:10px;cursor:pointer}
-.search-box button:hover{background:
+.search-box button:hover{background:#444}
 .aslr-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:15px}
 .aslr-stat{background:var(--bd);padding:12px;text-align:center;border-radius:4px}
 .aslr-stat-value{font-size:24px;font-weight:600;color:var(--ok)}
 .aslr-stat-label{font-size:10px;color:var(--dm);text-transform:uppercase;margin-top:4px}
 .aslr-ratings{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px}
 .ar-item{padding:6px 12px;font-size:11px;border-radius:3px;background:var(--bd)}
-.ar-excellent{border-left:3px solid var(--ok)}.ar-good{border-left:3px solid
-.ar-moderate{border-left:3px solid var(--wrn)}.ar-weak{border-left:3px solid
+.ar-excellent{border-left:3px solid var(--ok)}.ar-good{border-left:3px solid #58a6ff}
+.ar-moderate{border-left:3px solid var(--wrn)}.ar-weak{border-left:3px solid #f0883e}.ar-ineff{border-left:3px solid var(--bad)}
 .aslr-issues ul{margin-left:20px;margin-top:5px}.aslr-issues li{color:var(--dm);margin-bottom:3px}"""
 
     css = slim_css if slim else full_css
@@ -2659,9 +2651,12 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 {f'<div class="card"><div class="card-title">Configuration Issues ({len(result.config_issues)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Location</th><th>Issue</th><th>Context</th></tr></thead><tbody>{config_rows}</tbody></table></div></div>' if result.config_issues else ''}
 
 <div class="card"><div class="card-title">Classification</div>
+<div class="search-box"><input type="text" id="classSearch" placeholder="Search binaries..." onkeyup="filterClassification('classSearch')"></div>
+<div id="classificationContent">
 {build_class_section("SECURED", secured, "se")}
 {build_class_section("PARTIAL", partial, "pa")}
 {build_class_section("INSECURE", insecure, "in")}
+</div>
 </div>
 
 <div class="card"><div class="card-title">Tools Used</div>
@@ -2733,11 +2728,19 @@ function filterByRating(tableId, rating) {{
     }}
   }}
 }}
+function filterClassification(inputId) {{
+  var input = document.getElementById(inputId);
+  var filter = input.value.toLowerCase();
+  var items = document.querySelectorAll("#classificationContent .ci");
+  for (var i = 0; i < items.length; i++) {{
+    var text = items[i].textContent.toLowerCase();
+    items[i].style.display = text.indexOf(filter) > -1 ? "" : "none";
+  }}
+}}
 </script>
 </body></html>'''
 
     output_path.write_text(html, encoding="utf-8")
-
 
 
 
@@ -2837,6 +2840,8 @@ def generate_json_report(result: ScanResult, output_path: Path):
     }
 
     output_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 
 def main():
     """Main entry point."""
