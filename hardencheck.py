@@ -47,8 +47,7 @@ BANNER = r"""
 """
 
 
-# =============================================================================
-# =============================================================================
+
 
 class Severity(Enum):
     """Risk severity levels."""
@@ -242,8 +241,7 @@ class ScanResult:
     missing_tools: List[str] = field(default_factory=list)
 
 
-# =============================================================================
-# =============================================================================
+
 
 ARCH_ASLR_ENTROPY = {
     "x86_64": (47, 28, 22),
@@ -457,8 +455,7 @@ FIRMWARE_MARKERS = {
 }
 
 
-# =============================================================================
-# =============================================================================
+
 
 def safe_read_file(filepath: Path, max_size: int = 1024 * 1024) -> Optional[str]:
     """Safely read file content with size limit."""
@@ -484,8 +481,7 @@ def safe_read_binary(filepath: Path, max_size: int = 10 * 1024 * 1024) -> Option
         return None
 
 
-# =============================================================================
-# =============================================================================
+
 
 class ASLREntropyAnalyzer:
     """Analyzes ASLR entropy effectiveness for PIE binaries."""
@@ -779,8 +775,7 @@ class ASLREntropyAnalyzer:
         return analysis
 
 
-# =============================================================================
-# =============================================================================
+
 
 class HardenCheck:
     """Firmware security analyzer."""
@@ -2265,8 +2260,7 @@ class HardenCheck:
         )
 
 
-# =============================================================================
-# =============================================================================
+
 
 def classify_binary(binary: BinaryAnalysis) -> str:
     """Classify binary security level.
@@ -2383,8 +2377,7 @@ def calculate_grade(binaries: List[BinaryAnalysis]) -> Tuple[str, int]:
         return "F", int(average)
 
 
-# =============================================================================
-# =============================================================================
+
 
 def esc(value) -> str:
     """HTML-escape a value to prevent XSS."""
@@ -2746,8 +2739,7 @@ function filterByRating(tableId, rating) {{
     output_path.write_text(html, encoding="utf-8")
 
 
-# =============================================================================
-# =============================================================================
+
 
 def generate_json_report(result: ScanResult, output_path: Path):
     """Generate JSON report with ASLR analysis."""
@@ -2845,10 +2837,6 @@ def generate_json_report(result: ScanResult, output_path: Path):
     }
 
     output_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-# =============================================================================
-# =============================================================================
 
 def main():
     """Main entry point."""
