@@ -26,31 +26,28 @@ from datetime import datetime
 
 VERSION = "1.0"
 
-# Secure subprocess environment - restrict PATH to standard locations
 SECURE_ENV = {
     "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
     "LC_ALL": "C",
     "LANG": "C",
 }
 
-# Maximum recursion depth for directory walking
 MAX_RECURSION_DEPTH = 20
 
 BANNER = r"""
-    ╔═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╗
-    ║●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●║
-    ╟─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─╢
-    ║      ██  H A R D E N C H E C K  ██      ║
-    ║      ██  Firmware Security Tool ██      ║
-    ║      ██  v1.0 | @v33ru | IOTSRG ██      ║
-    ╟─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─╢
-    ║●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │ ║
-    ╚═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╝
+    ╔═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╤═╗
+    ║●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │●│●║
+    ╟─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─┴─╢
+    ║      ██  H A R D E N C H E C K  ██                ║
+    ║      ██  Firmware Security Tool ██                ║
+    ║      ██  v1.0 | @v33ru | IOTSRG ██                ║
+    ╟─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─┬─╢
+    ║●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │ │●│ │ │ │●│●║
+    ╚═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╧═╝
 """
 
 
 # =============================================================================
-# DATA STRUCTURES
 # =============================================================================
 
 class Severity(Enum):
@@ -73,12 +70,12 @@ class BinaryType(Enum):
 
 class ASLRRating(Enum):
     """ASLR effectiveness rating."""
-    EXCELLENT = "Excellent"      # >= 28 bits effective entropy
-    GOOD = "Good"                # 20-27 bits
-    MODERATE = "Moderate"        # 15-19 bits
-    WEAK = "Weak"                # 8-14 bits
-    INEFFECTIVE = "Ineffective"  # < 8 bits or non-PIE
-    NOT_APPLICABLE = "N/A"       # Static binary or analysis failed
+    EXCELLENT = "Excellent"
+    GOOD = "Good"
+    MODERATE = "Moderate"
+    WEAK = "Weak"
+    INEFFECTIVE = "Ineffective"
+    NOT_APPLICABLE = "N/A"
 
 
 @dataclass
@@ -90,30 +87,25 @@ class ASLRAnalysis:
     arch: str
     bits: int
     
-    # Address space layout
     text_vaddr: int = 0
     data_vaddr: int = 0
     bss_vaddr: int = 0
     entry_point: int = 0
     load_base: int = 0
     
-    # Entropy metrics
     theoretical_entropy: int = 0
     page_offset_bits: int = 12
     available_entropy: int = 0
     effective_entropy: int = 0
     
-    # Segment analysis
     num_load_segments: int = 0
     has_fixed_segments: bool = False
     fixed_segment_addrs: List[int] = field(default_factory=list)
     
-    # Additional checks
     has_textrel: bool = False
     has_rpath: bool = False
     stack_executable: bool = False
     
-    # Rating
     rating: ASLRRating = ASLRRating.NOT_APPLICABLE
     issues: List[str] = field(default_factory=list)
     recommendations: List[str] = field(default_factory=list)
@@ -176,9 +168,8 @@ class BinaryAnalysis:
     textrel: bool = False
     rpath: str = ""
     confidence: int = 100
-    # NEW: Separate tracking for confidence factors
-    unknown_fields: List[str] = field(default_factory=list)  # Fields we couldn't detect
-    tool_disagreements: List[str] = field(default_factory=list)  # Fields where tools disagreed
+    unknown_fields: List[str] = field(default_factory=list)
+    tool_disagreements: List[str] = field(default_factory=list)
     tools_used: List[str] = field(default_factory=list)
     aslr_analysis: Optional[ASLRAnalysis] = None
 
@@ -248,15 +239,12 @@ class ScanResult:
     certificates: List[CertificateFinding]
     config_issues: List[ConfigFinding]
     aslr_summary: Dict = field(default_factory=dict)
-    missing_tools: List[str] = field(default_factory=list)  # Track missing tools
+    missing_tools: List[str] = field(default_factory=list)
 
 
 # =============================================================================
-# CONSTANTS
 # =============================================================================
 
-# Architecture-specific ASLR entropy limits
-# Reference: Linux kernel mm/mmap.c and arch/*/include/asm/elf.h
 ARCH_ASLR_ENTROPY = {
     "x86_64": (47, 28, 22),
     "x86": (32, 8, 8),
@@ -269,8 +257,6 @@ ARCH_ASLR_ENTROPY = {
     "RISC-V": (39, 18, 14),
 }
 
-# Banned functions with alternatives and compliance mapping
-# Only HIGH/CRITICAL severity functions that are truly dangerous
 BANNED_FUNCTIONS = {
     "gets":     ("fgets(buf, size, stdin)", Severity.CRITICAL, "CWE-120, OWASP-I4"),
     "strcpy":   ("strlcpy() or strncpy()+null", Severity.HIGH, "CWE-120, OWASP-I4"),
@@ -285,8 +271,6 @@ BANNED_FUNCTIONS = {
     "tempnam":  ("mkstemp()", Severity.HIGH, "CWE-377, NIST SI-16"),
 }
 
-# Lower severity functions - only flagged in source code analysis, not binary imports
-# These are commonly used and not always dangerous
 LOW_RISK_FUNCTIONS = {
     "fscanf":   ("fgets() + sscanf()", Severity.LOW, "CWE-134"),
     "sscanf":   ("strtol/strtod with validation", Severity.INFO, "CWE-134"),
@@ -300,9 +284,7 @@ LOW_RISK_FUNCTIONS = {
     "localtime":("localtime_r()", Severity.INFO, "CWE-362"),
 }
 
-# Known network services with risk levels
 KNOWN_SERVICES = {
-    # Critical - unauthenticated/weak auth remote access
     "telnetd":     "CRITICAL",
     "utelnetd":    "CRITICAL", 
     "rlogind":     "CRITICAL",
@@ -311,7 +293,6 @@ KNOWN_SERVICES = {
     "tftpd":       "CRITICAL",
     "atftpd":      "CRITICAL",
     
-    # High - common attack targets
     "ftpd":        "HIGH",
     "vsftpd":      "HIGH",
     "proftpd":     "HIGH",
@@ -347,7 +328,6 @@ KNOWN_SERVICES = {
     "xinetd":      "HIGH",
     "inetd":       "HIGH",
     
-    # Medium - usually authenticated or limited exposure
     "sshd":        "MEDIUM",
     "dropbear":    "MEDIUM",
     "dnsmasq":     "MEDIUM",
@@ -387,7 +367,6 @@ KNOWN_SERVICES = {
     "ypbind":      "MEDIUM",
     "ypserv":      "MEDIUM",
     
-    # Low - monitoring/logging/time
     "ntpd":        "LOW",
     "chronyd":     "LOW",
     "crond":       "LOW",
@@ -431,30 +410,20 @@ CREDENTIAL_PATTERNS = [
 ]
 
 FALSE_POSITIVE_INDICATORS = {
-    # Function/method patterns
     "get_", "set_", "fetch_", "read_", "load_", "parse_", "validate_",
     "check_", "verify_", "update_", "create_", "delete_", "handle_",
-    # Environment variable patterns
     "env.", "os.environ", "getenv", "process.env", "environ[",
-    # Config object patterns
     "config.", "settings.", "options.", "params.", "args.",
-    # Code definition patterns
     "def ", "function ", "func ", "->", "return ", "class ",
     "const ", "let ", "var ", "private ", "public ", "protected ",
-    # Documentation/example patterns
     "example", "sample", "demo", "test", "mock", "fake", "dummy",
     "todo", "fixme", "xxx", "placeholder", "your_", "my_",
-    # Type annotation patterns
     ": str", ": string", ": String", "String ", "str ", ": &str",
     "<string>", "std::string", "QString", "NSString",
-    # Comment patterns (additional)
     "/*", "*/", "<!--", "-->", "'''", '"""',
-    # UI/Form field patterns
     "label=", "placeholder=", "hint=", "title=", "name=",
     "inputType=", "type=\"password\"", "type='password'",
-    # Schema/validation patterns
     "schema", "validate", "required", "optional", "field",
-    # Template patterns
     "{{", "}}", "{%", "%}", "<%", "%>", "${", "#{",
 }
 
@@ -465,17 +434,13 @@ WEAK_PASSWORDS = {
 }
 
 CONFIG_PATTERNS = [
-    # SSH configuration - only flag in actual sshd_config files
     (r'^\s*PermitRootLogin\s+yes\s*$', "sshd_config", "SSH root login enabled", Severity.HIGH),
     (r'^\s*PermitEmptyPasswords\s+yes\s*$', "sshd_config", "SSH empty passwords allowed", Severity.CRITICAL),
-    # Telnet service detection
     (r'^\s*telnet\s+stream\s+tcp', "inetd.conf", "Telnet service enabled", Severity.CRITICAL),
     (r'::respawn:.*/telnetd', "inittab", "Telnet auto-start enabled", Severity.CRITICAL),
-    # Password files - empty root password
     (r'^root::0:', "shadow", "Root has empty password", Severity.CRITICAL),
 ]
 
-# Patterns that are informational only (not security issues)
 CONFIG_INFO_PATTERNS = [
     (r'^\s*PasswordAuthentication\s+yes', "sshd_config", "SSH password auth enabled (consider keys)", Severity.INFO),
     (r'^root:\*:', "shadow", "Root account locked", Severity.INFO),
@@ -493,7 +458,6 @@ FIRMWARE_MARKERS = {
 
 
 # =============================================================================
-# HELPER FUNCTIONS
 # =============================================================================
 
 def safe_read_file(filepath: Path, max_size: int = 1024 * 1024) -> Optional[str]:
@@ -521,7 +485,6 @@ def safe_read_binary(filepath: Path, max_size: int = 10 * 1024 * 1024) -> Option
 
 
 # =============================================================================
-# ASLR ENTROPY ANALYZER
 # =============================================================================
 
 class ASLREntropyAnalyzer:
@@ -539,14 +502,11 @@ class ASLREntropyAnalyzer:
         """Set resource limits for child process to prevent DoS."""
         try:
             import resource
-            # CPU time limit: 60 seconds
             resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
-            # Virtual memory limit: 512MB
             resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
-            # File size limit: 10MB (for any output files)
             resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
         except (ImportError, ValueError, OSError):
-            pass  # Resource limits not available on this platform
+            pass
     
     def _run_command(self, cmd: List[str], timeout: int = 30) -> Tuple[int, str, str]:
         """Execute command securely with restricted environment and resource limits."""
@@ -708,7 +668,6 @@ class ASLREntropyAnalyzer:
         analysis.bits = elf_info['bits']
         analysis.entry_point = elf_info['entry']
         
-        # Check if binary is actually PIE (ET_DYN)
         is_pie = elf_info['type'] == self.ET_DYN
         if not is_pie:
             analysis.is_pie = False
@@ -719,42 +678,30 @@ class ASLREntropyAnalyzer:
         
         analysis.is_pie = True
         
-        # Parse program headers
         phdrs = self._parse_program_headers(data, elf_info)
         load_segments = [ph for ph in phdrs if ph['type'] == self.PT_LOAD]
         analysis.num_load_segments = len(load_segments)
         
-        # Improved fixed-segment detection using delta consistency
-        # Linker scripts often use repeated delta patterns (e.g., 0x200000 gaps)
-        # PIE binaries typically have low base vaddrs and random-friendly layout
         if len(load_segments) >= 2:
             vaddrs = [ph['vaddr'] for ph in load_segments]
             
-            # Calculate deltas between consecutive segments
             deltas = [vaddrs[i+1] - vaddrs[i] for i in range(len(vaddrs)-1)]
             
-            # Heuristics for fixed layout detection:
-            # 1. High absolute addresses (non-PIE typically starts at 0x400000+)
             has_high_base = vaddrs[0] >= 0x400000
             
-            # 2. Consistent delta pattern (suggests linker script)
-            # Check if deltas are suspiciously uniform (within 1MB of each other)
             if len(deltas) >= 2:
                 delta_variance = max(deltas) - min(deltas)
-                has_consistent_deltas = delta_variance < 0x100000  # 1MB tolerance
+                has_consistent_deltas = delta_variance < 0x100000
             else:
                 has_consistent_deltas = False
             
-            # 3. Very large gaps between segments (uncommon in PIE)
-            has_large_gaps = any(d > 0x10000000 for d in deltas)  # 256MB gap
+            has_large_gaps = any(d > 0x10000000 for d in deltas)
             
-            # Only flag as fixed if strong indicators present
             if has_high_base and (has_consistent_deltas or has_large_gaps):
                 analysis.has_fixed_segments = True
                 analysis.fixed_segment_addrs = vaddrs
                 analysis.issues.append("Fixed segment layout detected (linker script pattern)")
             elif has_high_base and analysis.bits == 64:
-                # For 64-bit, high base alone isn't definitive, just note it
                 analysis.issues.append(f"High base address: 0x{vaddrs[0]:x} (verify PIE)")
         
         if load_segments:
@@ -763,14 +710,12 @@ class ASLREntropyAnalyzer:
             if len(load_segments) > 1:
                 analysis.data_vaddr = load_segments[1]['vaddr']
         
-        # Check for GNU_STACK (executable stack)
         for ph in phdrs:
             if ph['type'] == self.PT_GNU_STACK:
                 if ph['flags'] & 0x1:
                     analysis.stack_executable = True
                     analysis.issues.append("Executable stack detected")
         
-        # Check dynamic section
         dyn_info = self._check_dynamic_section(filepath)
         analysis.has_textrel = dyn_info['has_textrel'] or binary_analysis.textrel
         analysis.has_rpath = dyn_info['has_rpath']
@@ -781,8 +726,6 @@ class ASLREntropyAnalyzer:
         if analysis.has_rpath:
             analysis.issues.append(f"RPATH/RUNPATH set: {dyn_info['rpath']}")
         
-        # Calculate entropy based on architecture
-        # NOTE: These are DEFAULT kernel values; actual may differ
         arch_key = analysis.arch
         if arch_key not in ARCH_ASLR_ENTROPY:
             arch_key = "x86_64" if analysis.bits == 64 else "x86"
@@ -796,13 +739,10 @@ class ASLREntropyAnalyzer:
         analysis.page_offset_bits = 12
         analysis.available_entropy = mmap_rand
         
-        # Add disclaimer about theoretical nature
         analysis.issues.append(f"Entropy is theoretical estimate (kernel default: {mmap_rand} bits)")
         
-        # Calculate effective entropy considering constraints
         effective = analysis.available_entropy
         
-        # Penalties for issues
         if analysis.has_textrel:
             effective -= 8
             analysis.recommendations.append("Remove TEXTREL by compiling with -fPIC")
@@ -815,7 +755,6 @@ class ASLREntropyAnalyzer:
             effective -= 2
             analysis.recommendations.append("Disable executable stack with -z noexecstack")
         
-        # Architecture-specific adjustments
         if analysis.bits == 32:
             effective = min(effective, 8)
             if effective < 12:
@@ -824,13 +763,11 @@ class ASLREntropyAnalyzer:
         
         analysis.effective_entropy = max(0, effective)
         
-        # Calculate rating
         analysis.rating = self._calculate_entropy_rating(
             analysis.effective_entropy, 
             analysis.issues
         )
         
-        # Add recommendations based on rating
         if analysis.rating in (ASLRRating.WEAK, ASLRRating.INEFFECTIVE):
             if analysis.bits == 32:
                 analysis.recommendations.append("Migrate to 64-bit for stronger ASLR")
@@ -843,7 +780,6 @@ class ASLREntropyAnalyzer:
 
 
 # =============================================================================
-# MAIN SCANNER CLASS
 # =============================================================================
 
 class HardenCheck:
@@ -898,14 +834,11 @@ class HardenCheck:
         """Set resource limits for child process to prevent DoS."""
         try:
             import resource
-            # CPU time limit: 60 seconds
             resource.setrlimit(resource.RLIMIT_CPU, (60, 60))
-            # Virtual memory limit: 512MB  
             resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
-            # File size limit: 10MB
             resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
         except (ImportError, ValueError, OSError):
-            pass  # Resource limits not available on this platform
+            pass
 
     def _run_command(self, cmd: List[str], timeout: int = 30) -> Tuple[int, str, str]:
         """Execute command securely with restricted environment and resource limits."""
@@ -985,7 +918,7 @@ class HardenCheck:
         binaries = []
         sources = []
         configs = []
-        seen_inodes = set()  # Track seen files to avoid duplicates
+        seen_inodes = set()
 
         source_extensions = {".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hxx"}
         config_extensions = {".conf", ".cfg", ".ini", ".config", ".xml", ".json", ".yaml", ".yml"}
@@ -998,14 +931,11 @@ class HardenCheck:
             for filename in files:
                 filepath = Path(root) / filename
 
-                # Follow symlinks but track to avoid duplicates
                 try:
                     if filepath.is_symlink():
                         real_path = filepath.resolve()
-                        # Check if target exists and is within our scan directory
                         if not real_path.exists():
                             continue
-                        # Get inode to detect duplicates (same file, different symlinks)
                         stat_info = real_path.stat()
                         inode = (stat_info.st_dev, stat_info.st_ino)
                         if inode in seen_inodes:
@@ -1034,6 +964,7 @@ class HardenCheck:
         profile = FirmwareProfile()
 
         executables = [b for b in binaries if b[1] == BinaryType.EXECUTABLE]
+        
         if executables and "file" in self.tools:
             ret, out, _ = self._run_command([self.tools["file"], str(executables[0][0])])
             if ret == 0:
@@ -1062,6 +993,32 @@ class HardenCheck:
                     profile.endian = "Little Endian"
                 elif "msb" in out_lower or "big endian" in out_lower:
                     profile.endian = "Big Endian"
+
+        if profile.arch == "Unknown" and executables:
+            try:
+                with open(executables[0][0], "rb") as f:
+                    header = f.read(20)
+                    if len(header) >= 20 and header[:4] == b'\x7fELF':
+                        elf_class = header[4]
+                        profile.bits = "64" if elf_class == 2 else "32"
+                        
+                        elf_endian = header[5]
+                        profile.endian = "Little Endian" if elf_endian == 1 else "Big Endian"
+                        
+                        if elf_endian == 1:
+                            machine = header[18] | (header[19] << 8)
+                        else:
+                            machine = (header[18] << 8) | header[19]
+                        
+                        machine_map = {
+                            3: "x86", 6: "x86", 62: "x86_64",
+                            40: "ARM", 183: "ARM64",
+                            8: "MIPS", 20: "PowerPC", 21: "PowerPC64",
+                            243: "RISC-V"
+                        }
+                        profile.arch = machine_map.get(machine, f"Unknown({machine})")
+            except (OSError, IOError):
+                pass
 
         for fw_type, markers in FIRMWARE_MARKERS.items():
             for marker in markers:
@@ -1247,7 +1204,6 @@ class HardenCheck:
         daemons = []
         seen_binaries = set()
         
-        # Detect BusyBox multicall binary
         busybox_path = None
         for binary in binaries:
             if binary.filename.lower() == "busybox":
@@ -1256,7 +1212,6 @@ class HardenCheck:
 
         executables = [b for b in binaries if b.binary_type == BinaryType.EXECUTABLE]
 
-        # Common non-daemon binaries ending in 'd' to exclude
         non_daemons = {
             "systemd", "udevd", "lvmetad", "kmod", "modload",
             "chmod", "chgrp", "chown", "find", "sed", "awk", "gawk",
@@ -1275,11 +1230,9 @@ class HardenCheck:
             if filename_lower in seen_binaries:
                 continue
             
-            # Skip excluded non-daemons
             if filename_lower in non_daemons:
                 continue
             
-            # Skip if this is a BusyBox symlink
             if busybox_path and binary.path != busybox_path:
                 filepath = self.target / binary.path
                 try:
@@ -1294,43 +1247,36 @@ class HardenCheck:
             reason_parts = []
             risk = "UNKNOWN"
 
-            # Method 1: Known service names (HIGH confidence)
             if filename_lower in KNOWN_SERVICES:
                 is_daemon = True
                 risk = KNOWN_SERVICES[filename_lower]
                 reason_parts.append("known service")
             
-            # Check properties for other methods
             if not is_daemon:
                 filepath = self.target / binary.path
                 has_network = self._has_network_symbols(filepath)
                 in_init = self._is_referenced_in_init(filename)
                 ends_with_d = filename_lower.endswith("d") and len(filename_lower) > 3
                 
-                # Method 2: *d + network symbols (MEDIUM confidence)
                 if ends_with_d and has_network:
                     is_daemon = True
                     reason_parts.append("daemon name (*d)")
                     reason_parts.append("network symbols")
                     risk = "MEDIUM"
                 
-                # Method 3: *d + init script (MEDIUM confidence)
                 elif ends_with_d and in_init:
                     is_daemon = True
                     reason_parts.append("daemon name (*d)")
                     reason_parts.append("init script")
                     risk = "MEDIUM"
                 
-                # Method 4: network + init (MEDIUM confidence)
                 elif has_network and in_init:
                     is_daemon = True
                     reason_parts.append("network symbols")
                     reason_parts.append("init script")
                     risk = "MEDIUM"
                 
-                # Method 5: Just *d pattern with daemon-like name (LOW confidence)
                 elif ends_with_d and len(filename_lower) > 4:
-                    # Look for daemon-like patterns in name
                     daemon_patterns = ["serv", "daemon", "agent", "proxy", "server", "listen", "mgr", "mgmt"]
                     if any(p in filename_lower for p in daemon_patterns):
                         is_daemon = True
@@ -1399,77 +1345,56 @@ class HardenCheck:
 
         readelf = self.tools["readelf"]
 
-        # Parse ELF header explicitly for type detection
         ret, header_out, _ = self._run_command([readelf, "-W", "-h", str(filepath)], timeout=10)
         elf_type = None
         if ret == 0:
-            # Parse "Type:" field explicitly - format: "Type:                              DYN (Shared object file)"
             type_match = re.search(r'Type:\s+(\w+)', header_out)
             if type_match:
-                elf_type = type_match.group(1)  # "EXEC", "DYN", "REL", etc.
+                elf_type = type_match.group(1)
 
-        # Get program headers for NX and PIE detection
         ret, out, _ = self._run_command([readelf, "-W", "-l", str(filepath)], timeout=10)
         if ret == 0:
-            # NX Detection: Parse GNU_STACK segment flags explicitly
-            # Format: "  GNU_STACK      0x000000 0x00000000 0x00000000 0x00000 0x00000 RW  0x10"
-            # The flags field (RW, RWE, etc.) is what we need
             if "GNU_STACK" in out:
                 for line in out.split("\n"):
                     if "GNU_STACK" in line:
-                        # Split by whitespace and look for flags pattern (RW, RWE, R, etc.)
                         parts = line.split()
                         for part in parts:
                             if re.match(r'^R?W?E?$', part) and len(part) <= 3 and len(part) > 0:
                                 result["nx"] = 'E' not in part
                                 break
-                        # Alternative: check for explicit "RWE" or just "RW"
                         if result["nx"] is None:
                             result["nx"] = "RWE" not in line
                         break
-            # If no GNU_STACK, result["nx"] stays None (unknown)
 
-            # Check for RELRO
             if "GNU_RELRO" in out:
                 result["relro"] = "partial"
 
-            # Check for INTERP segment (indicates executable, not shared lib)
             has_interp = "INTERP" in out
             result["has_interp"] = has_interp
             
-            # PIE Detection: Must be ET_DYN AND have INTERP
             if elf_type == "DYN":
                 if has_interp:
-                    # ET_DYN + INTERP = PIE executable
                     result["pie"] = True
                 else:
-                    # ET_DYN without INTERP = shared library (not PIE)
                     result["pie"] = False
                     result["is_shared_lib"] = True
             elif elf_type == "EXEC":
-                # Traditional non-PIE executable
                 result["pie"] = False
 
-        # Get dynamic section - parse explicitly
         ret, out, _ = self._run_command([readelf, "-W", "-d", str(filepath)], timeout=10)
         if ret == 0:
-            # Look for BIND_NOW or FLAGS containing BIND_NOW
             if "BIND_NOW" in out or "(NOW)" in out:
                 result["relro"] = "full"
 
-            # Parse RPATH/RUNPATH explicitly
-            # Format: " 0x000000000000001d (RUNPATH)            Library runpath: [/lib]"
             rpath_match = re.search(r'(?:RPATH|RUNPATH)[^\[]*\[([^\]]+)\]', out)
             if rpath_match:
                 result["rpath"] = rpath_match.group(1)
                 result["relro"] = "full"
 
-        # Check for stack canary
         ret, out, _ = self._run_command([readelf, "-W", "--dyn-syms", str(filepath)], timeout=10)
         if ret == 0:
             result["canary"] = "__stack_chk_fail" in out
 
-        # Check if stripped
         ret, out, _ = self._run_command([readelf, "-W", "-S", str(filepath)], timeout=10)
         if ret == 0:
             result["stripped"] = ".symtab" not in out
@@ -1550,7 +1475,6 @@ class HardenCheck:
         unknown_fields = []
         tool_disagreements = []
 
-        # NX detection with disagreement tracking
         if rabin2_data and "nx" in rabin2_data:
             analysis.nx = rabin2_data.get("nx", False)
             tools_used.append("rabin2")
@@ -1564,7 +1488,6 @@ class HardenCheck:
             unknown_fields.append("nx")
             confidence -= 10
 
-        # Canary detection
         if rabin2_data and "canary" in rabin2_data:
             analysis.canary = rabin2_data.get("canary", False)
             if readelf_data["canary"] is not None and rabin2_data.get("canary") != readelf_data["canary"]:
@@ -1576,7 +1499,6 @@ class HardenCheck:
             unknown_fields.append("canary")
             confidence -= 10
 
-        # PIE detection
         if rabin2_data and "pic" in rabin2_data:
             analysis.pie = rabin2_data.get("pic", False)
         elif readelf_data["pie"] is not None:
@@ -1585,13 +1507,11 @@ class HardenCheck:
             unknown_fields.append("pie")
             confidence -= 10
 
-        # RELRO detection
         if rabin2_data and rabin2_data.get("relro"):
             analysis.relro = rabin2_data.get("relro", "none")
         else:
             analysis.relro = readelf_data["relro"]
 
-        # Stripped detection
         if rabin2_data and "stripped" in rabin2_data:
             analysis.stripped = rabin2_data.get("stripped", False)
         elif readelf_data["stripped"] is not None:
@@ -1599,19 +1519,16 @@ class HardenCheck:
         else:
             unknown_fields.append("stripped")
 
-        # RPATH
         if rabin2_data:
             rpath = rabin2_data.get("rpath", "NONE")
             analysis.rpath = "" if rpath == "NONE" else rpath
         else:
             analysis.rpath = readelf_data["rpath"]
 
-        # Hardening checks
         analysis.fortify = hardening_data["fortify"]
         if hardening_data["fortify"] is None:
             unknown_fields.append("fortify")
         
-        # Stack Clash and CFI only checked in extended mode
         if self.extended:
             analysis.stack_clash = hardening_data["stack_clash"]
             analysis.cfi = hardening_data["cfi"]
@@ -1621,13 +1538,11 @@ class HardenCheck:
         
         analysis.textrel = scanelf_data["textrel"]
 
-        # Store tracking info
         analysis.confidence = max(confidence, 50)
         analysis.tools_used = tools_used
         analysis.unknown_fields = unknown_fields
         analysis.tool_disagreements = tool_disagreements
 
-        # NEW: Perform ASLR entropy analysis for PIE binaries
         if analysis.pie is True and binary_type == BinaryType.EXECUTABLE:
             analysis.aslr_analysis = self.aslr_analyzer.analyze(filepath, analysis)
 
@@ -1645,23 +1560,16 @@ class HardenCheck:
         if "readelf" not in self.tools:
             return risks
 
-        # Only flag shared libs with CRITICAL security issues
-        # Missing canary alone is not critical for shared libs
         insecure_libs = {}
         for binary in binaries:
             if binary.binary_type == BinaryType.SHARED_LIB:
                 issues = []
-                # NX is critical for all binaries
                 if binary.nx is False:
                     issues.append("No NX (executable stack)")
-                # TEXTREL is a security issue for libs
                 if binary.textrel:
                     issues.append("TEXTREL (reduced ASLR)")
-                # Missing RELRO can be an issue
                 if binary.relro == "none":
                     issues.append("No RELRO")
-                # Note: We intentionally DON'T flag missing canary for shared libs
-                # because it's often acceptable and causes too many false positives
                 
                 if issues:
                     insecure_libs[binary.filename] = ", ".join(issues)
@@ -1705,7 +1613,6 @@ class HardenCheck:
         if "readelf" not in self.tools:
             return hits
 
-        # Only scan for truly dangerous functions in binaries
         patterns = {}
         for func in BANNED_FUNCTIONS:
             patterns[func] = re.compile(rf"\s{re.escape(func)}(?:@|$|\s)", re.MULTILINE)
@@ -1720,7 +1627,6 @@ class HardenCheck:
                 continue
 
             for func, (alternative, severity, compliance) in BANNED_FUNCTIONS.items():
-                # Only report HIGH/CRITICAL severity for binary imports
                 if severity.value < Severity.MEDIUM.value:
                     continue
                 if patterns[func].search(out):
@@ -1740,7 +1646,6 @@ class HardenCheck:
         """Scan source files for banned function calls."""
         hits = []
 
-        # Combine both high and low risk functions for source analysis
         all_functions = {**BANNED_FUNCTIONS, **LOW_RISK_FUNCTIONS}
         
         patterns = {}
@@ -1752,7 +1657,6 @@ class HardenCheck:
             if not content:
                 continue
 
-            # Remove comments to avoid false positives
             content_clean = re.sub(r"//[^\n]*", "", content)
             content_clean = re.sub(r"/\*.*?\*/", "", content_clean, flags=re.DOTALL)
 
@@ -1765,13 +1669,11 @@ class HardenCheck:
             lines_clean = content_clean.split("\n")
 
             for line_num, (original, cleaned) in enumerate(zip(lines, lines_clean), start=1):
-                # Skip comment lines
                 stripped = original.strip()
                 if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
                     continue
                     
                 for func, (alternative, severity, compliance) in all_functions.items():
-                    # Skip INFO level unless explicitly requested
                     if severity == Severity.INFO:
                         continue
                     if patterns[func].search(cleaned):
@@ -1793,27 +1695,20 @@ class HardenCheck:
         scanned_files = set()
         
         skip_patterns = {
-            # Localization/translation files
             "/locales/", "/locale/", "/i18n/", "/translations/", "/lang/",
             "translation.json", "translations.json", "messages.json",
-            # Documentation
             "/doc/", "/docs/", "/documentation/", "/examples/", "/samples/",
             "/share/doc/", "/usr/share/doc/", "/man/", "/help/",
             "README", "CHANGELOG", "LICENSE", "COPYING",
-            # Test files
             "/test/", "/tests/", "/spec/", "/specs/", "/__tests__/",
             "_test.py", "_test.go", "_test.js", ".test.js", ".spec.js",
             "test_", "mock_", "fake_", "stub_",
-            # UI/Config templates
             "UserInterfaceConfig.json", "device-payload",
             "/templates/", "/views/", "/layouts/",
-            # Package/dependency files
             "package.json", "package-lock.json", "yarn.lock",
             "Cargo.lock", "go.sum", "requirements.txt", "Gemfile.lock",
-            # Build artifacts
             "/node_modules/", "/vendor/", "/dist/", "/build/",
             "/.git/", "/.svn/", "/.hg/",
-            # Binary/compiled paths
             ".pyc", ".pyo", ".class", ".o", ".obj",
         }
 
@@ -1902,12 +1797,10 @@ class HardenCheck:
         value_lower = value.lower().strip()
         line_lower = line.lower()
 
-        # Check false positive indicators in line context
         for indicator in FALSE_POSITIVE_INDICATORS:
             if indicator in line_lower:
                 return True
 
-        # Known placeholder values
         placeholders = {
             "xxx", "yyy", "zzz", "changeme", "placeholder", "example",
             "your_password", "your_secret", "insert_here", "todo",
@@ -1922,7 +1815,6 @@ class HardenCheck:
         if value_lower in placeholders:
             return True
 
-        # Environment variable patterns: $VAR, ${VAR}, %VAR%
         if re.match(r"^[\$%]\{?\w+\}?$", value):
             return True
         if re.match(r"^\$\(\w+\)$", value):
@@ -1933,40 +1825,31 @@ class HardenCheck:
             return True
         if re.match(r"^%[a-zA-Z_]+%$", value):
             return True
-        # Ruby/ERB: <%= var %>
         if re.match(r"^<%[=]?\s*\w+\s*%>$", value):
             return True
-        # Jinja2/Django: {{ var }}
         if re.match(r"^\{\{\s*\w+\s*\}\}$", value):
             return True
 
-        # Repetitive characters (like "aaaa" or "1111")
         if len(set(value)) <= 2 and len(value) >= 3:
             return True
 
-        # All lowercase with underscores only (likely variable name)
         if re.match(r"^[a-z_]+$", value) and len(value) < 20:
             return True
 
-        # Repeated pattern (like "abcabc")
         if len(value) >= 4:
             half = len(value) // 2
             if value[:half] == value[half:2*half]:
                 return True
 
-        # Common filename/path patterns
         if re.match(r"^[./\\]", value) or value.endswith((".txt", ".json", ".xml", ".yaml", ".yml")):
             return True
 
-        # URL-like patterns without actual credentials
         if re.match(r"^https?://", value_lower):
             return True
 
-        # Numeric only (not a password)
         if value.isdigit():
             return True
 
-        # Very short values (< 4 chars) are usually not real passwords
         if len(value) < 4:
             return True
 
@@ -1978,7 +1861,6 @@ class HardenCheck:
         depth = 0
 
         for root, dirs, files in os.walk(self.target):
-            # Limit recursion depth
             depth = root.count(os.sep) - str(self.target).count(os.sep)
             if depth > MAX_RECURSION_DEPTH:
                 dirs[:] = []
@@ -1997,13 +1879,10 @@ class HardenCheck:
                 except ValueError:
                     rel_path = str(filepath)
 
-                # For .key files, verify PEM header before flagging
                 if suffix == ".key" or "private" in filename.lower():
-                    # Read first 100 bytes to check for PEM header
                     try:
                         with open(filepath, 'rb') as f:
                             header = f.read(100)
-                        # Check for actual private key PEM header
                         if b"-----BEGIN" in header and b"PRIVATE KEY-----" in header:
                             findings.append(CertificateFinding(
                                 file=rel_path,
@@ -2018,8 +1897,6 @@ class HardenCheck:
                                 issue="Key file (PEM) found in firmware",
                                 severity=Severity.MEDIUM
                             ))
-                        # If no PEM header, it might just be named .key but not a key
-                        # Don't flag it as high severity
                         elif suffix == ".key":
                             findings.append(CertificateFinding(
                                 file=rel_path,
@@ -2031,12 +1908,11 @@ class HardenCheck:
                         pass
 
                 elif suffix in {".pem", ".crt", ".cer"}:
-                    # Verify it's actually a certificate/key
                     try:
                         with open(filepath, 'rb') as f:
                             header = f.read(100)
                         if b"-----BEGIN" not in header:
-                            continue  # Not a PEM file, skip
+                            continue
                         
                         if b"PRIVATE KEY-----" in header:
                             findings.append(CertificateFinding(
@@ -2054,7 +1930,6 @@ class HardenCheck:
                                     issue=issue,
                                     severity=Severity.MEDIUM
                                 ))
-                            # Don't flag normal certificates as issues
                     except (OSError, PermissionError):
                         pass
 
@@ -2248,7 +2123,12 @@ class HardenCheck:
         print("[2/9] Analyzing firmware profile...")
         profile = self.detect_firmware_profile(binaries_raw)
         print(f"      Type: {profile.fw_type}")
-        print(f"      Arch: {profile.arch} {profile.bits}-bit {profile.endian}")
+        arch_str = profile.arch
+        if profile.bits != "Unknown":
+            arch_str += f" {profile.bits}-bit"
+        if profile.endian != "Unknown":
+            arch_str += f" {profile.endian}"
+        print(f"      Arch: {arch_str}")
         print(f"      Libc: {profile.libc}")
         if profile.kernel != "Unknown":
             print(f"      Kernel: {profile.kernel}")
@@ -2259,7 +2139,6 @@ class HardenCheck:
         print("[3/9] Analyzing binary hardening + ASLR entropy...")
         analyzed_binaries = []
         
-        # Process in batches to prevent memory spikes
         BATCH_SIZE = 50
         total_binaries = len(binaries_raw)
         
@@ -2279,7 +2158,6 @@ class HardenCheck:
                     except Exception as e:
                         self._log(f"Analysis error: {e}")
             
-            # Progress indicator for large scans
             if total_binaries > 100:
                 print(f"      Progress: {len(analyzed_binaries)}/{total_binaries}")
 
@@ -2347,7 +2225,6 @@ class HardenCheck:
 
         duration = (datetime.now() - start_time).total_seconds()
         
-        # Track missing tools
         all_tools = {"rabin2", "hardening-check", "scanelf", "readelf", "file", "strings", "openssl"}
         missing_tools = list(all_tools - set(self.tools.keys()))
 
@@ -2389,7 +2266,6 @@ class HardenCheck:
 
 
 # =============================================================================
-# CLASSIFICATION AND GRADING
 # =============================================================================
 
 def classify_binary(binary: BinaryAnalysis) -> str:
@@ -2401,22 +2277,18 @@ def classify_binary(binary: BinaryAnalysis) -> str:
     """
     is_shared_lib = binary.binary_type == BinaryType.SHARED_LIB
     
-    # For shared libraries, only NX is critical (canary less important for libs)
     if is_shared_lib:
         if binary.nx is False:
             return "INSECURE"
-        # Shared libs with NX and RELRO are reasonably secure
         if binary.nx is True and binary.relro in ("full", "partial"):
             if binary.canary is True and binary.relro == "full":
                 return "SECURED"
             return "PARTIAL"
         return "PARTIAL"
     
-    # For executables, both NX and canary are critical
     if binary.nx is False or binary.canary is False:
         return "INSECURE"
 
-    # Check if extended mode (stack_clash/cfi checked) or not
     extended_ok = True
     if binary.stack_clash not in ("yes", "skipped"):
         extended_ok = False
@@ -2512,7 +2384,6 @@ def calculate_grade(binaries: List[BinaryAnalysis]) -> Tuple[str, int]:
 
 
 # =============================================================================
-# HTML REPORT GENERATION
 # =============================================================================
 
 def esc(value) -> str:
@@ -2551,7 +2422,6 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
     profile = result.profile
     aslr_summary = result.aslr_summary
 
-    # Build binary rows - ALL values are HTML-escaped
     binary_rows = ""
     for binary in sorted(result.binaries, key=lambda x: x.filename):
         classification = classify_binary(binary)
@@ -2563,7 +2433,7 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
             elif value == "yes": return '<td class="ok">Y</td>'
             elif value == "no": return '<td class="bad">N</td>'
             elif value == "unknown": return '<td class="wrn">?</td>'
-            elif value == "skipped": return ''  # Hidden column
+            elif value == "skipped": return ''
             elif value == "full": return '<td class="ok">full</td>'
             elif value == "partial": return '<td class="wrn">partial</td>'
             elif value == "none": return '<td class="bad">none</td>'
@@ -2578,7 +2448,6 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
         binary_rows += f'<td class="{"bad" if binary.rpath else "ok"}">{esc(binary.rpath[:12]) if binary.rpath else "-"}</td>'
         binary_rows += f"<td>{binary.confidence}%</td></tr>"
 
-    # Build ASLR analysis rows - with HTML escaping
     aslr_rows = ""
     binaries_with_aslr = [b for b in result.binaries if b.aslr_analysis]
     for binary in sorted(binaries_with_aslr, key=lambda x: x.aslr_analysis.effective_entropy if x.aslr_analysis else 0):
@@ -2599,7 +2468,6 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
         aslr_rows += f'<td class="{"bad" if aslr.has_textrel else "ok"}">{"Yes" if aslr.has_textrel else "No"}</td>'
         aslr_rows += f'<td class="loc">{esc(issues_str)}</td></tr>'
 
-    # Build daemon rows - with HTML escaping
     daemon_rows = ""
     for daemon in result.daemons:
         risk_class = "bad" if daemon.risk == "CRITICAL" else "wrn" if daemon.risk in ("HIGH", "UNKNOWN") else ""
@@ -2609,7 +2477,6 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
         daemon_rows += f'<td class="loc">{esc(daemon.path)}</td><td class="{status_class}">{esc(daemon.status)}</td>'
         daemon_rows += f'<td class="loc">{esc(daemon.reason)}</td></tr>'
 
-    # Build banned function rows - with HTML escaping
     banned_rows = ""
     for hit in sorted(result.banned_functions, key=lambda x: (-x.severity.value, x.function)):
         sev_class = "bad" if hit.severity.value >= 3 else "wrn"
@@ -2623,7 +2490,6 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
         banned_rows += f'<td class="ok">{esc(hit.alternative)}</td><td class="{sev_class}">{esc(hit.severity.name)}</td>'
         banned_rows += f'<td class="loc">{esc(hit.compliance)}</td></tr>'
 
-    # Build other rows - ALL with HTML escaping
     dep_rows = "".join(f'<tr><td class="bad">{esc(r.library)}</td><td>{esc(r.issue)}</td><td>{esc(", ".join(r.used_by[:5]))}</td></tr>' for r in result.dependency_risks)
     cred_rows = "".join(f'<tr><td class="loc">{esc(c.file)}:{c.line}</td><td class="{"bad" if c.severity.value >= 3 else "wrn"}">{esc(c.pattern)}</td><td class="loc">{esc(c.snippet[:50])}</td></tr>' for c in result.credentials)
     cert_rows = "".join(f'<tr><td class="loc">{esc(c.file)}</td><td>{esc(c.file_type)}</td><td class="{"bad" if c.severity.value >= 3 else "wrn" if c.severity.value >= 2 else ""}">{esc(c.issue)}</td></tr>' for c in result.certificates)
@@ -2668,15 +2534,13 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
 {f'<div class="aslr-issues"><b>Common Issues:</b><ul>{"".join(f"<li>{k}: {v} binaries</li>" for k, v in list(aslr_summary.get("common_issues", {}).items())[:5])}</ul></div>' if aslr_summary.get("common_issues") else ""}
 </div>'''
 
-    # Slim CSS for embedded/minimal reports
     slim_css = """body{font-family:monospace;font-size:12px;padding:10px}
-table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccc;padding:4px;text-align:left}
+table{border-collapse:collapse;width:100%}th,td{border:1px solid
 .ok{color:green}.bad{color:red}.wrn{color:orange}
 h1{font-size:16px}h2{font-size:14px}"""
     
-    # Full CSS for rich reports
     full_css = """*{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0a0a;--cd:#111;--bd:#222;--tx:#e0e0e0;--dm:#666;--ok:#0c6;--bad:#f33;--wrn:#fa0}
+:root{--bg:
 body{font-family:'Fira Code',monospace;background:var(--bg);color:var(--tx);font-size:12px;padding:20px;line-height:1.5}
 .container{max-width:1600px;margin:0 auto}
 h1{font-size:18px;font-weight:600;margin-bottom:5px}
@@ -2684,7 +2548,7 @@ h1{font-size:18px;font-weight:600;margin-bottom:5px}
 .card{background:var(--cd);border:1px solid var(--bd);padding:15px;margin-bottom:15px}
 .card-title{font-size:13px;font-weight:600;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--bd)}
 .grade{font-size:48px;font-weight:600;display:inline-block;margin-right:20px}
-.ga{color:var(--ok)}.gb{color:#6c6}.gc{color:var(--wrn)}.gd{color:#f60}.gf{color:var(--bad)}
+.ga{color:var(--ok)}.gb{color:
 .summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:15px}
 .sum-card{background:var(--cd);border:1px solid var(--bd);padding:12px;text-align:center}
 .sum-card.se{border-color:var(--ok)}.sum-card.pa{border-color:var(--wrn)}.sum-card.in{border-color:var(--bad)}
@@ -2716,15 +2580,15 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 .search-box{margin-bottom:10px;display:flex;gap:8px;align-items:center}
 .search-box input{background:var(--bd);border:1px solid var(--bd);color:var(--tx);padding:6px 10px;font-size:11px;font-family:inherit;width:200px}
 .search-box button{background:var(--bd);border:1px solid var(--bd);color:var(--tx);padding:6px 12px;font-size:10px;cursor:pointer}
-.search-box button:hover{background:#333}
+.search-box button:hover{background:
 .aslr-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:15px}
 .aslr-stat{background:var(--bd);padding:12px;text-align:center;border-radius:4px}
 .aslr-stat-value{font-size:24px;font-weight:600;color:var(--ok)}
 .aslr-stat-label{font-size:10px;color:var(--dm);text-transform:uppercase;margin-top:4px}
 .aslr-ratings{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:15px}
 .ar-item{padding:6px 12px;font-size:11px;border-radius:3px;background:var(--bd)}
-.ar-excellent{border-left:3px solid var(--ok)}.ar-good{border-left:3px solid #6c6}
-.ar-moderate{border-left:3px solid var(--wrn)}.ar-weak{border-left:3px solid #f60}.ar-ineff{border-left:3px solid var(--bad)}
+.ar-excellent{border-left:3px solid var(--ok)}.ar-good{border-left:3px solid
+.ar-moderate{border-left:3px solid var(--wrn)}.ar-weak{border-left:3px solid
 .aslr-issues ul{margin-left:20px;margin-top:5px}.aslr-issues li{color:var(--dm);margin-bottom:3px}"""
 
     css = slim_css if slim else full_css
@@ -2751,7 +2615,7 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 <div class="card"><div class="card-title">Firmware Profile</div>
 <div class="profile">
 <div class="profile-row"><span class="profile-label">Type</span><span>{profile.fw_type}</span></div>
-<div class="profile-row"><span class="profile-label">Architecture</span><span>{profile.arch} {profile.bits}-bit</span></div>
+<div class="profile-row"><span class="profile-label">Architecture</span><span>{profile.arch}{f" {profile.bits}-bit" if profile.bits != "Unknown" else ""}</span></div>
 <div class="profile-row"><span class="profile-label">Endianness</span><span>{profile.endian}</span></div>
 <div class="profile-row"><span class="profile-label">Libc</span><span>{profile.libc}</span></div>
 <div class="profile-row"><span class="profile-label">Kernel</span><span>{profile.kernel}</span></div>
@@ -2883,7 +2747,6 @@ function filterByRating(tableId, rating) {{
 
 
 # =============================================================================
-# JSON REPORT GENERATION
 # =============================================================================
 
 def generate_json_report(result: ScanResult, output_path: Path):
@@ -2985,7 +2848,6 @@ def generate_json_report(result: ScanResult, output_path: Path):
 
 
 # =============================================================================
-# MAIN ENTRY POINT
 # =============================================================================
 
 def main():
