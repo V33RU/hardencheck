@@ -15,10 +15,11 @@ import subprocess
 import re
 import stat
 import struct
+import uuid
 import html as html_module
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Set
 from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -237,6 +238,43 @@ class ConfigFinding:
 
 
 @dataclass
+class SBOMComponent:
+    """Software Bill of Materials component."""
+    name: str
+    version: str
+    component_type: str  # library, application, firmware, framework, os
+    path: str
+    sha256: str = ""
+    license_id: str = ""
+    supplier: str = ""
+    cpe: str = ""
+    purl: str = ""
+    description: str = ""
+    dependencies: List[str] = field(default_factory=list)  # NEEDED libs
+    source: str = ""  # detection method: elf, package_manager, strings, filename
+    arch: str = ""
+    is_third_party: bool = True
+    security_flags: Dict = field(default_factory=dict)  # nx, pie, canary etc from BinaryAnalysis
+
+
+@dataclass
+class SBOMResult:
+    """Complete SBOM output."""
+    serial_number: str
+    timestamp: str
+    firmware_name: str
+    firmware_version: str
+    components: List[SBOMComponent]
+    dependency_tree: Dict[str, List[str]]  # binary -> [needed_libs]
+    total_components: int = 0
+    total_libraries: int = 0
+    total_applications: int = 0
+    components_with_version: int = 0
+    components_with_cpe: int = 0
+    package_manager_source: str = ""
+
+
+@dataclass
 class ScanResult:
     """Complete scan result."""
     target: str
@@ -253,6 +291,7 @@ class ScanResult:
     config_issues: List[ConfigFinding]
     aslr_summary: Dict = field(default_factory=dict)
     missing_tools: List[str] = field(default_factory=list)
+    sbom: Optional[SBOMResult] = None
 
 
 
@@ -458,6 +497,168 @@ CONFIG_INFO_PATTERNS = [
 ]
 
 CERT_EXTENSIONS = {".pem", ".crt", ".cer", ".der", ".key", ".p12", ".pfx", ".jks"}
+
+# ============================================================================
+# SBOM: CPE/PURL mapping for known IoT firmware components
+# Format: binary_name -> (vendor, product, cpe_prefix, purl_type)
+# CPE 2.3: cpe:2.3:a:vendor:product:version:*:*:*:*:*:*:*
+# ============================================================================
+CPE_COMPONENT_MAP = {
+    # Core system
+    "busybox":       ("busybox", "busybox", "a", "generic"),
+    "libc.so":       ("gnu", "glibc", "a", "generic"),
+    "libc-":         ("gnu", "glibc", "a", "generic"),
+    "ld-linux":      ("gnu", "glibc", "a", "generic"),
+    "ld-musl":       ("musl-libc", "musl", "a", "generic"),
+    "libuClibc":     ("uclibc", "uclibc", "a", "generic"),
+
+    # SSL/TLS
+    "libssl":        ("openssl", "openssl", "a", "generic"),
+    "libcrypto":     ("openssl", "openssl", "a", "generic"),
+    "openssl":       ("openssl", "openssl", "a", "generic"),
+    "libwolfssl":    ("wolfssl", "wolfssl", "a", "generic"),
+    "libmbedtls":    ("arm", "mbed_tls", "a", "generic"),
+    "libmbedcrypto": ("arm", "mbed_tls", "a", "generic"),
+    "libgnutls":     ("gnu", "gnutls", "a", "generic"),
+
+    # Crypto
+    "libsodium":     ("libsodium_project", "libsodium", "a", "generic"),
+    "libgcrypt":     ("gnupg", "libgcrypt", "a", "generic"),
+    "libnettle":     ("gnu", "nettle", "a", "generic"),
+
+    # Web servers
+    "nginx":         ("f5", "nginx", "a", "generic"),
+    "lighttpd":      ("lighttpd", "lighttpd", "a", "generic"),
+    "httpd":         ("apache", "http_server", "a", "generic"),
+    "apache2":       ("apache", "http_server", "a", "generic"),
+    "uhttpd":        ("openwrt", "uhttpd", "a", "generic"),
+    "goahead":       ("embedthis", "goahead", "a", "generic"),
+    "boa":           ("boa", "boa_web_server", "a", "generic"),
+    "thttpd":        ("acme", "thttpd", "a", "generic"),
+    "mini_httpd":    ("acme", "mini_httpd", "a", "generic"),
+    "mongoose":      ("cesanta", "mongoose", "a", "generic"),
+
+    # SSH
+    "dropbear":      ("dropbear_ssh_project", "dropbear_ssh", "a", "generic"),
+    "sshd":          ("openbsd", "openssh", "a", "generic"),
+
+    # DNS
+    "dnsmasq":       ("thekelleys", "dnsmasq", "a", "generic"),
+    "named":         ("isc", "bind", "a", "generic"),
+    "unbound":       ("nlnetlabs", "unbound", "a", "generic"),
+
+    # Network services
+    "hostapd":       ("w1.fi", "hostapd", "a", "generic"),
+    "wpa_supplicant":("w1.fi", "wpa_supplicant", "a", "generic"),
+    "openvpn":       ("openvpn", "openvpn", "a", "generic"),
+    "pppd":          ("samba", "ppp", "a", "generic"),
+    "mosquitto":     ("eclipse", "mosquitto", "a", "generic"),
+    "avahi-daemon":  ("avahi", "avahi", "a", "generic"),
+
+    # SMB/NFS
+    "smbd":          ("samba", "samba", "a", "generic"),
+    "nmbd":          ("samba", "samba", "a", "generic"),
+    "nfsd":          ("linux", "nfs-utils", "a", "generic"),
+
+    # FTP
+    "vsftpd":        ("vsftpd_project", "vsftpd", "a", "generic"),
+    "proftpd":       ("proftpd", "proftpd", "a", "generic"),
+
+    # SNMP
+    "snmpd":         ("net-snmp", "net-snmp", "a", "generic"),
+
+    # Misc libraries
+    "libz.so":       ("zlib", "zlib", "a", "generic"),
+    "libcurl":       ("haxx", "curl", "a", "generic"),
+    "curl":          ("haxx", "curl", "a", "generic"),
+    "wget":          ("gnu", "wget", "a", "generic"),
+    "libjson-c":     ("json-c_project", "json-c", "a", "generic"),
+    "libxml2":       ("xmlsoft", "libxml2", "a", "generic"),
+    "libsqlite":     ("sqlite", "sqlite", "a", "generic"),
+    "sqlite3":       ("sqlite", "sqlite", "a", "generic"),
+    "libpcre":       ("pcre", "pcre", "a", "generic"),
+    "libexpat":      ("libexpat_project", "libexpat", "a", "generic"),
+    "libpng":        ("libpng", "libpng", "a", "generic"),
+    "libjpeg":       ("ijg", "libjpeg", "a", "generic"),
+    "libdbus":       ("freedesktop", "dbus", "a", "generic"),
+    "libubus":       ("openwrt", "ubus", "a", "generic"),
+    "libubox":       ("openwrt", "libubox", "a", "generic"),
+    "libuci":        ("openwrt", "uci", "a", "generic"),
+    "libblkid":      ("kernel", "util-linux", "a", "generic"),
+    "libuuid":       ("kernel", "util-linux", "a", "generic"),
+    "libpthread":    ("gnu", "glibc", "a", "generic"),
+    "librt":         ("gnu", "glibc", "a", "generic"),
+    "libdl":         ("gnu", "glibc", "a", "generic"),
+    "libm":          ("gnu", "glibc", "a", "generic"),
+    "libstdc++":     ("gnu", "gcc", "a", "generic"),
+    "libgcc_s":      ("gnu", "gcc", "a", "generic"),
+    "libnl":         ("libnl_project", "libnl", "a", "generic"),
+    "libiwinfo":     ("openwrt", "iwinfo", "a", "generic"),
+    "libnfnetlink":  ("netfilter", "libnetfilter", "a", "generic"),
+    "libiptc":       ("netfilter", "iptables", "a", "generic"),
+    "iptables":      ("netfilter", "iptables", "a", "generic"),
+    "ip6tables":     ("netfilter", "iptables", "a", "generic"),
+    "nftables":      ("netfilter", "nftables", "a", "generic"),
+    "libreadline":   ("gnu", "readline", "a", "generic"),
+    "libncurses":    ("gnu", "ncurses", "a", "generic"),
+
+    # IoT / MQTT / CoAP
+    "libcoap":       ("libcoap", "libcoap", "a", "generic"),
+    "libmosquitto":  ("eclipse", "mosquitto", "a", "generic"),
+    "libpaho":       ("eclipse", "paho_mqtt", "a", "generic"),
+
+    # Containers / runtime
+    "containerd":    ("linuxfoundation", "containerd", "a", "generic"),
+    "dockerd":       ("docker", "docker", "a", "generic"),
+    "runc":          ("opencontainers", "runc", "a", "generic"),
+
+    # Kernel
+    "vmlinux":       ("linux", "linux_kernel", "o", "generic"),
+    "vmlinuz":       ("linux", "linux_kernel", "o", "generic"),
+    "zImage":        ("linux", "linux_kernel", "o", "generic"),
+    "uImage":        ("linux", "linux_kernel", "o", "generic"),
+    "bzImage":       ("linux", "linux_kernel", "o", "generic"),
+
+    # UPnP / TR-069
+    "miniupnpd":     ("miniupnp_project", "miniupnpd", "a", "generic"),
+    "cwmpd":         ("cwmp", "cwmpd", "a", "generic"),
+}
+
+# License hints from binary/package names
+LICENSE_HINTS = {
+    "busybox": "GPL-2.0-only",
+    "glibc": "LGPL-2.1-or-later",
+    "musl": "MIT",
+    "uclibc": "LGPL-2.1-or-later",
+    "openssl": "Apache-2.0",
+    "wolfssl": "GPL-2.0-or-later",
+    "mbed_tls": "Apache-2.0",
+    "gnutls": "LGPL-2.1-or-later",
+    "nginx": "BSD-2-Clause",
+    "lighttpd": "BSD-3-Clause",
+    "dropbear_ssh": "MIT",
+    "openssh": "BSD-2-Clause",
+    "dnsmasq": "GPL-2.0-only",
+    "curl": "curl",
+    "zlib": "Zlib",
+    "sqlite": "blessing",
+    "libxml2": "MIT",
+    "libpng": "Libpng",
+    "samba": "GPL-3.0-or-later",
+    "mosquitto": "EPL-2.0",
+    "openvpn": "GPL-2.0-only",
+    "hostapd": "BSD-3-Clause",
+    "wpa_supplicant": "BSD-3-Clause",
+    "iptables": "GPL-2.0-or-later",
+    "linux_kernel": "GPL-2.0-only",
+    "util-linux": "GPL-2.0-or-later",
+    "gcc": "GPL-3.0-or-later",
+    "readline": "GPL-3.0-or-later",
+    "ncurses": "MIT",
+    "net-snmp": "BSD-3-Clause",
+    "dbus": "AFL-2.1 OR GPL-2.0-or-later",
+    "json-c": "MIT",
+}
 
 FIRMWARE_MARKERS = {
     "OpenWrt": ["/etc/openwrt_release", "/etc/openwrt_version"],
@@ -2644,6 +2845,419 @@ class HardenCheck:
         
         return summary
 
+    # ========================================================================
+    # SBOM (Software Bill of Materials) Generation
+    # ========================================================================
+
+    def _lookup_cpe(self, name: str) -> Tuple[str, str, str, str]:
+        """Lookup CPE mapping for a component name.
+        
+        Returns: (vendor, product, cpe_part, purl_type) or empty strings.
+        """
+        name_lower = name.lower()
+        
+        # Direct match
+        for key, value in CPE_COMPONENT_MAP.items():
+            if key.lower() == name_lower or name_lower.startswith(key.lower()):
+                return value
+        
+        # Partial match on library soname
+        base_name = name_lower.split(".so")[0] if ".so" in name_lower else name_lower
+        base_name = re.sub(r'-[\d.]+$', '', base_name)  # strip version suffix
+        
+        for key, value in CPE_COMPONENT_MAP.items():
+            if key.lower() == base_name or base_name.startswith(key.lower()):
+                return value
+        
+        return ("", "", "", "")
+
+    def _build_cpe23(self, vendor: str, product: str, version: str, part: str = "a") -> str:
+        """Build CPE 2.3 formatted string."""
+        ver = version if version and version != "Unknown" else "*"
+        ver = re.sub(r'[^a-zA-Z0-9._\-]', '', ver)  # sanitize
+        return f"cpe:2.3:{part}:{vendor}:{product}:{ver}:*:*:*:*:*:*:*"
+
+    def _build_purl(self, pkg_type: str, namespace: str, name: str, version: str) -> str:
+        """Build Package URL (PURL) string."""
+        ver = version if version and version != "Unknown" else ""
+        purl = f"pkg:{pkg_type}/{namespace}/{name}"
+        if ver:
+            purl += f"@{ver}"
+        return purl
+
+    def _get_needed_libs(self, filepath: Path) -> List[str]:
+        """Extract NEEDED shared library dependencies from ELF binary."""
+        if "readelf" not in self.tools:
+            return []
+        
+        ret, out, _ = self._run_command(
+            [self.tools["readelf"], "-W", "-d", str(filepath)], timeout=10
+        )
+        
+        if ret != 0:
+            return []
+        
+        needed = []
+        for line in out.split("\n"):
+            match = re.search(r'\(NEEDED\)\s+Shared library:\s+\[([^\]]+)\]', line)
+            if match:
+                needed.append(match.group(1))
+        
+        return needed
+
+    def _enumerate_packages_opkg(self) -> List[Dict]:
+        """Enumerate installed packages via opkg status file."""
+        packages = []
+        
+        status_paths = [
+            self.target / "usr" / "lib" / "opkg" / "status",
+            self.target / "var" / "lib" / "opkg" / "status",
+            self.target / "usr" / "lib" / "opkg" / "info",
+            self.target / "opt" / "lib" / "opkg" / "status",
+        ]
+        
+        for status_path in status_paths:
+            if status_path.is_file():
+                content = safe_read_file(status_path, max_size=2 * 1024 * 1024)
+                if not content:
+                    continue
+                
+                current = {}
+                for line in content.split("\n"):
+                    if line.startswith("Package:"):
+                        if current.get("name"):
+                            packages.append(current)
+                        current = {"name": line.split(":", 1)[1].strip()}
+                    elif line.startswith("Version:") and current:
+                        current["version"] = line.split(":", 1)[1].strip()
+                    elif line.startswith("Architecture:") and current:
+                        current["arch"] = line.split(":", 1)[1].strip()
+                    elif line.startswith("Depends:") and current:
+                        deps = [d.strip().split(" ")[0] for d in line.split(":", 1)[1].split(",")]
+                        current["depends"] = deps
+                    elif line.startswith("Description:") and current:
+                        current["description"] = line.split(":", 1)[1].strip()[:120]
+                    elif line.startswith("Section:") and current:
+                        current["section"] = line.split(":", 1)[1].strip()
+                
+                if current.get("name"):
+                    packages.append(current)
+                
+                if packages:
+                    break
+            
+            elif status_path.is_dir():
+                try:
+                    for control_file in status_path.iterdir():
+                        if control_file.suffix == ".control":
+                            content = safe_read_file(control_file, max_size=8192)
+                            if not content:
+                                continue
+                            pkg = {}
+                            for line in content.split("\n"):
+                                if line.startswith("Package:"):
+                                    pkg["name"] = line.split(":", 1)[1].strip()
+                                elif line.startswith("Version:"):
+                                    pkg["version"] = line.split(":", 1)[1].strip()
+                                elif line.startswith("Architecture:"):
+                                    pkg["arch"] = line.split(":", 1)[1].strip()
+                                elif line.startswith("Depends:"):
+                                    deps = [d.strip().split(" ")[0] for d in line.split(":", 1)[1].split(",")]
+                                    pkg["depends"] = deps
+                                elif line.startswith("Description:"):
+                                    pkg["description"] = line.split(":", 1)[1].strip()[:120]
+                            if pkg.get("name"):
+                                packages.append(pkg)
+                except (OSError, PermissionError):
+                    pass
+        
+        return packages
+
+    def _enumerate_packages_dpkg(self) -> List[Dict]:
+        """Enumerate installed packages via dpkg status file."""
+        packages = []
+        
+        status_path = self.target / "var" / "lib" / "dpkg" / "status"
+        if not status_path.exists():
+            return packages
+        
+        content = safe_read_file(status_path, max_size=5 * 1024 * 1024)
+        if not content:
+            return packages
+        
+        current = {}
+        for line in content.split("\n"):
+            if line.startswith("Package:"):
+                if current.get("name"):
+                    packages.append(current)
+                current = {"name": line.split(":", 1)[1].strip()}
+            elif line.startswith("Version:") and current:
+                current["version"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Architecture:") and current:
+                current["arch"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Depends:") and current:
+                deps = [d.strip().split(" ")[0] for d in line.split(":", 1)[1].split(",")]
+                current["depends"] = deps
+            elif line.startswith("Description:") and current:
+                current["description"] = line.split(":", 1)[1].strip()[:120]
+            elif line.startswith("Status:") and current:
+                current["status"] = line.split(":", 1)[1].strip()
+            elif line.startswith("Source:") and current:
+                current["source_pkg"] = line.split(":", 1)[1].strip().split(" ")[0]
+        
+        if current.get("name"):
+            packages.append(current)
+        
+        # Only include installed packages
+        packages = [p for p in packages if "installed" in p.get("status", "installed")]
+        
+        return packages
+
+    def _extract_so_version(self, filename: str) -> str:
+        """Extract version from shared library filename (e.g., libssl.so.1.1.1k -> 1.1.1k)."""
+        match = re.search(r'\.so\.(.+)$', filename)
+        if match:
+            return match.group(1)
+        return ""
+
+    def generate_sbom(self, binaries: List[BinaryAnalysis], profile: FirmwareProfile) -> SBOMResult:
+        """Generate Software Bill of Materials from firmware analysis.
+        
+        Detection methods (layered, highest confidence first):
+        1. Package manager metadata (opkg/dpkg status files)
+        2. ELF binary analysis (readelf NEEDED + strings version)
+        3. Shared library soname + version suffix
+        4. Known component CPE mapping
+        
+        Args:
+            binaries: Analyzed binary list from scan
+            profile: Firmware profile metadata
+            
+        Returns:
+            SBOMResult with all discovered components
+        """
+        components = []
+        dependency_tree = {}
+        seen_components = set()  # (name, version) dedup
+        pkg_manager_source = ""
+        
+        # ---- Layer 1: Package manager enumeration ----
+        pkg_components = {}  # name -> SBOMComponent (for dedup with Layer 2)
+        
+        pkgs = self._enumerate_packages_opkg()
+        if pkgs:
+            pkg_manager_source = "opkg"
+        else:
+            pkgs = self._enumerate_packages_dpkg()
+            if pkgs:
+                pkg_manager_source = "dpkg"
+        
+        if pkgs:
+            self._log(f"SBOM: Found {len(pkgs)} packages from {pkg_manager_source}")
+            
+            for pkg in pkgs:
+                name = pkg.get("name", "")
+                version = pkg.get("version", "Unknown")
+                
+                if not name:
+                    continue
+                
+                key = (name.lower(), version)
+                if key in seen_components:
+                    continue
+                seen_components.add(key)
+                
+                vendor, product, cpe_part, purl_type = self._lookup_cpe(name)
+                
+                cpe = self._build_cpe23(vendor, product, version, cpe_part) if vendor else ""
+                purl = self._build_purl(
+                    "opkg" if pkg_manager_source == "opkg" else "deb",
+                    vendor or "firmware", name, version
+                ) if name else ""
+                
+                license_id = LICENSE_HINTS.get(product, "")
+                
+                comp = SBOMComponent(
+                    name=name,
+                    version=version,
+                    component_type="library" if name.startswith("lib") else "application",
+                    path="",
+                    sha256="",
+                    license_id=license_id,
+                    supplier=vendor,
+                    cpe=cpe,
+                    purl=purl,
+                    description=pkg.get("description", ""),
+                    dependencies=pkg.get("depends", []),
+                    source=f"package_manager:{pkg_manager_source}",
+                    arch=pkg.get("arch", profile.arch),
+                    is_third_party=True,
+                )
+                
+                components.append(comp)
+                pkg_components[name.lower()] = comp
+        
+        # ---- Layer 2: ELF binary analysis ----
+        for binary in binaries:
+            filepath = self.target / binary.path
+            filename = binary.filename
+            filename_lower = filename.lower()
+            
+            # Skip if already covered by package manager with same name
+            if filename_lower in pkg_components:
+                # But still extract dependency tree
+                needed = self._get_needed_libs(filepath)
+                if needed:
+                    dependency_tree[binary.path] = needed
+                continue
+            
+            key = (filename_lower, "")
+            
+            # Get version from multiple sources
+            version = ""
+            
+            # a) soname version suffix
+            if ".so" in filename:
+                version = self._extract_so_version(filename)
+            
+            # b) strings-based extraction (if no soname version)
+            if not version and binary.binary_type in (BinaryType.EXECUTABLE, BinaryType.SHARED_LIB):
+                version = self._extract_version(filepath)
+                if version == "Unknown":
+                    version = ""
+            
+            key = (filename_lower.split(".so")[0] if ".so" in filename_lower else filename_lower, version)
+            if key in seen_components:
+                continue
+            seen_components.add(key)
+            
+            # Build dependency tree
+            needed = self._get_needed_libs(filepath)
+            if needed:
+                dependency_tree[binary.path] = needed
+            
+            # CPE/PURL lookup
+            vendor, product, cpe_part, purl_type = self._lookup_cpe(filename)
+            
+            cpe = self._build_cpe23(vendor, product, version, cpe_part) if vendor and version else ""
+            purl = self._build_purl(
+                "generic", vendor or "firmware",
+                product or filename_lower.split(".so")[0], version
+            ) if version else ""
+            
+            license_id = LICENSE_HINTS.get(product, "")
+            
+            # Determine component type
+            if binary.binary_type == BinaryType.SHARED_LIB:
+                comp_type = "library"
+            elif binary.binary_type == BinaryType.KERNEL_MODULE:
+                comp_type = "firmware"
+            else:
+                comp_type = "application"
+            
+            # Security flags from hardening analysis
+            sec_flags = {}
+            if binary.nx is not None:
+                sec_flags["nx"] = binary.nx
+            if binary.canary is not None:
+                sec_flags["canary"] = binary.canary
+            if binary.pie is not None:
+                sec_flags["pie"] = binary.pie
+            if binary.relro != "none":
+                sec_flags["relro"] = binary.relro
+            if binary.fortify is not None:
+                sec_flags["fortify"] = binary.fortify
+            
+            comp = SBOMComponent(
+                name=product or (filename_lower.split(".so")[0] if ".so" in filename_lower else filename_lower),
+                version=version if version else "Unknown",
+                component_type=comp_type,
+                path=binary.path,
+                sha256=binary.sha256,
+                license_id=license_id,
+                supplier=vendor,
+                cpe=cpe,
+                purl=purl,
+                description="",
+                dependencies=needed,
+                source="elf_analysis",
+                arch=profile.arch,
+                is_third_party=bool(vendor),
+                security_flags=sec_flags,
+            )
+            
+            components.append(comp)
+        
+        # ---- Layer 3: Kernel and firmware-level components ----
+        if profile.kernel and profile.kernel != "Unknown":
+            key = ("linux_kernel", profile.kernel)
+            if key not in seen_components:
+                seen_components.add(key)
+                components.append(SBOMComponent(
+                    name="linux-kernel",
+                    version=profile.kernel,
+                    component_type="firmware",
+                    path="",
+                    cpe=self._build_cpe23("linux", "linux_kernel", profile.kernel, "o"),
+                    purl=self._build_purl("generic", "linux", "linux-kernel", profile.kernel),
+                    license_id="GPL-2.0-only",
+                    supplier="linux",
+                    source="firmware_profile",
+                    arch=profile.arch,
+                    is_third_party=True,
+                ))
+        
+        # BusyBox as a top-level component
+        if profile.busybox_applets > 0:
+            bb_version = ""
+            for binary in binaries:
+                if binary.filename.lower() == "busybox":
+                    bb_version = self._extract_version(self.target / binary.path)
+                    break
+            
+            key = ("busybox", bb_version)
+            if key not in seen_components:
+                seen_components.add(key)
+                components.append(SBOMComponent(
+                    name="busybox",
+                    version=bb_version if bb_version != "Unknown" else "",
+                    component_type="application",
+                    path="",
+                    cpe=self._build_cpe23("busybox", "busybox", bb_version, "a") if bb_version and bb_version != "Unknown" else "",
+                    purl=self._build_purl("generic", "busybox", "busybox", bb_version) if bb_version and bb_version != "Unknown" else "",
+                    license_id="GPL-2.0-only",
+                    supplier="busybox",
+                    description=f"BusyBox with {profile.busybox_applets} applets",
+                    source="firmware_profile",
+                    arch=profile.arch,
+                    is_third_party=True,
+                ))
+        
+        # Sort: applications first, then libraries, then by name
+        type_order = {"application": 0, "firmware": 1, "library": 2, "framework": 3, "os": 4}
+        components.sort(key=lambda c: (type_order.get(c.component_type, 5), c.name.lower()))
+        
+        total = len(components)
+        total_libs = sum(1 for c in components if c.component_type == "library")
+        total_apps = sum(1 for c in components if c.component_type == "application")
+        with_version = sum(1 for c in components if c.version and c.version != "Unknown")
+        with_cpe = sum(1 for c in components if c.cpe)
+        
+        return SBOMResult(
+            serial_number=f"urn:uuid:{uuid.uuid4()}",
+            timestamp=datetime.now(tz=None).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            firmware_name=Path(self.target).name,
+            firmware_version="",
+            components=components,
+            dependency_tree=dependency_tree,
+            total_components=total,
+            total_libraries=total_libs,
+            total_applications=total_apps,
+            components_with_version=with_version,
+            components_with_cpe=with_cpe,
+            package_manager_source=pkg_manager_source,
+        )
+
     def scan(self) -> ScanResult:
         """Execute complete security scan."""
         start_time = datetime.now()
@@ -2662,14 +3276,14 @@ class HardenCheck:
             print(f"    - Missing: {', '.join(missing)}")
         print()
 
-        print("[1/9] Discovering files...")
+        print("[1/10] Discovering files...")
         binaries_raw, sources, configs = self.find_files()
         print(f"      ELF binaries: {len(binaries_raw)}")
         print(f"      Source files: {len(sources)}")
         print(f"      Config files: {len(configs)}")
         print()
 
-        print("[2/9] Analyzing firmware profile...")
+        print("[2/10] Analyzing firmware profile...")
         profile = self.detect_firmware_profile(binaries_raw)
         print(f"      Type: {profile.fw_type}")
         arch_str = profile.arch
@@ -2708,7 +3322,7 @@ class HardenCheck:
             print(f"      Setgid: {len(profile.setgid_files)} files")
         print()
 
-        print("[3/9] Analyzing binary hardening + ASLR entropy...")
+        print("[3/10] Analyzing binary hardening + ASLR entropy...")
         analyzed_binaries = []
         
         BATCH_SIZE = 50
@@ -2743,7 +3357,7 @@ class HardenCheck:
         print(f"      PIE binaries with ASLR analysis: {aslr_count}")
         print()
 
-        print("[4/9] Detecting network services/daemons...")
+        print("[4/10] Detecting network services/daemons...")
         daemons = self.detect_daemons(analyzed_binaries)
         if daemons:
             for daemon in daemons[:5]:
@@ -2755,7 +3369,7 @@ class HardenCheck:
             print("      No daemons detected")
         print()
 
-        print("[5/9] Analyzing dependency chain...")
+        print("[5/10] Analyzing dependency chain...")
         dep_risks = self.analyze_dependencies(analyzed_binaries)
         if dep_risks:
             for risk in dep_risks[:3]:
@@ -2766,26 +3380,26 @@ class HardenCheck:
             print("      No insecure dependencies")
         print()
 
-        print("[6/9] Scanning for banned functions...")
+        print("[6/10] Scanning for banned functions...")
         banned_binary = self.scan_banned_functions_binary(analyzed_binaries)
         banned_source = self.scan_banned_functions_source(sources)
         banned_all = banned_binary + banned_source
         print(f"      Found: {len(banned_all)} ({len(banned_binary)} binary, {len(banned_source)} source)")
         print()
 
-        print("[7/9] Scanning for credentials and certificates...")
+        print("[7/10] Scanning for credentials and certificates...")
         credentials = self.scan_credentials(configs, sources)
         certificates = self.scan_certificates()
         print(f"      Credentials: {len(credentials)} findings")
         print(f"      Certificates: {len(certificates)} files")
         print()
 
-        print("[8/9] Scanning configuration files...")
+        print("[8/10] Scanning configuration files...")
         config_issues = self.scan_configurations(configs)
         print(f"      Config issues: {len(config_issues)}")
         print()
 
-        print("[9/9] Generating ASLR entropy summary...")
+        print("[9/10] Generating ASLR entropy summary...")
         aslr_summary = self.generate_aslr_summary(analyzed_binaries)
         if aslr_summary["analyzed"] > 0:
             print(f"      Average effective entropy: {aslr_summary['avg_effective_entropy']:.1f} bits")
@@ -2793,6 +3407,16 @@ class HardenCheck:
                   f"Good={aslr_summary['by_rating']['good']}, "
                   f"Weak={aslr_summary['by_rating']['weak']}, "
                   f"Ineffective={aslr_summary['by_rating']['ineffective']}")
+        print()
+
+        print("[10/10] Generating SBOM (Software Bill of Materials)...")
+        sbom = self.generate_sbom(analyzed_binaries, profile)
+        print(f"      Components: {sbom.total_components} ({sbom.total_applications} apps, {sbom.total_libraries} libs)")
+        print(f"      With version: {sbom.components_with_version}/{sbom.total_components}")
+        print(f"      With CPE:     {sbom.components_with_cpe}/{sbom.total_components}")
+        print(f"      Dependency links: {len(sbom.dependency_tree)}")
+        if sbom.package_manager_source:
+            print(f"      Package source: {sbom.package_manager_source}")
         print()
 
         duration = (datetime.now() - start_time).total_seconds()
@@ -2814,6 +3438,7 @@ class HardenCheck:
   Credentials:  {len(credentials)} findings
   Certificates: {len(certificates)} files
   Config Issues:{len(config_issues)} findings
+  SBOM:         {sbom.total_components} components ({sbom.components_with_cpe} with CPE)
   
   Duration: {duration:.1f}s
 {'=' * 65}
@@ -2833,7 +3458,8 @@ class HardenCheck:
             certificates=certificates,
             config_issues=config_issues,
             aslr_summary=aslr_summary,
-            missing_tools=missing_tools
+            missing_tools=missing_tools,
+            sbom=sbom
         )
 
 
@@ -3063,6 +3689,71 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
     cert_rows = "".join(f'<tr><td class="loc">{esc(c.file)}</td><td>{esc(c.file_type)}</td><td class="{"bad" if c.severity.value >= 3 else "wrn" if c.severity.value >= 2 else ""}">{esc(c.issue)}</td></tr>' for c in result.certificates)
     config_rows = "".join(f'<tr><td class="loc">{esc(i.file)}:{i.line}</td><td class="{"bad" if i.severity.value >= 3 else "wrn"}">{esc(i.issue)}</td><td class="loc">{esc(i.snippet[:50])}</td></tr>' for i in result.config_issues)
 
+    # SBOM table rows
+    sbom_rows = ""
+    sbom_summary_html = ""
+    sbom_dep_rows = ""
+    if result.sbom and result.sbom.components:
+        sbom = result.sbom
+        for comp in sbom.components:
+            type_class = "ok" if comp.component_type == "library" else "wrn" if comp.component_type == "application" else ""
+            ver_class = "ok" if comp.version and comp.version != "Unknown" else "bad"
+            cpe_short = comp.cpe.split(":")[4] + ":" + comp.cpe.split(":")[5] if comp.cpe and len(comp.cpe.split(":")) > 5 else "-"
+            
+            sec_str = ""
+            if comp.security_flags:
+                flags = []
+                for flag, val in comp.security_flags.items():
+                    if isinstance(val, bool):
+                        flags.append(f'<span class="{"ok" if val else "bad"}">{flag.upper()}</span>')
+                    else:
+                        flags.append(f'<span class="{"ok" if val == "full" else "wrn" if val == "partial" else "bad"}">{flag}={val}</span>')
+                sec_str = " ".join(flags)
+            
+            sbom_rows += f'<tr>'
+            sbom_rows += f'<td class="fn">{esc(comp.name)}</td>'
+            sbom_rows += f'<td class="{ver_class}">{esc(comp.version)}</td>'
+            sbom_rows += f'<td class="{type_class}">{esc(comp.component_type)}</td>'
+            sbom_rows += f'<td>{esc(comp.supplier) if comp.supplier else "<span class=dm>-</span>"}</td>'
+            sbom_rows += f'<td class="loc">{esc(cpe_short)}</td>'
+            sbom_rows += f'<td class="loc">{esc(comp.license_id) if comp.license_id else "-"}</td>'
+            sbom_rows += f'<td class="loc">{esc(comp.source)}</td>'
+            sbom_rows += f'<td>{sec_str if sec_str else "-"}</td>'
+            sbom_rows += f'</tr>'
+        
+        # SBOM dependency tree rows
+        for binary_path, needed_libs in sorted(sbom.dependency_tree.items()):
+            binary_name = Path(binary_path).name
+            for lib in needed_libs:
+                # Lookup version for the lib
+                lib_ver = ""
+                for comp in sbom.components:
+                    lib_base = lib.lower().split(".so")[0] if ".so" in lib.lower() else lib.lower()
+                    if comp.name.lower() == lib_base or lib.lower().startswith(comp.name.lower()):
+                        lib_ver = comp.version
+                        break
+                ver_class = "ok" if lib_ver and lib_ver != "Unknown" else "dm"
+                sbom_dep_rows += f'<tr><td class="fn">{esc(binary_name)}</td>'
+                sbom_dep_rows += f'<td>{esc(lib)}</td>'
+                sbom_dep_rows += f'<td class="{ver_class}">{esc(lib_ver) if lib_ver else "?"}</td></tr>'
+        
+        # SBOM summary stats
+        sbom_summary_html = f'''<div class="card">
+<div class="card-title">Software Bill of Materials (SBOM)</div>
+<div class="aslr-stats">
+<div class="aslr-stat"><div class="aslr-stat-value">{sbom.total_components}</div><div class="aslr-stat-label">Components</div></div>
+<div class="aslr-stat"><div class="aslr-stat-value">{sbom.total_applications}</div><div class="aslr-stat-label">Applications</div></div>
+<div class="aslr-stat"><div class="aslr-stat-value">{sbom.total_libraries}</div><div class="aslr-stat-label">Libraries</div></div>
+<div class="aslr-stat"><div class="aslr-stat-value">{sbom.components_with_cpe}</div><div class="aslr-stat-label">With CPE</div></div>
+</div>
+<div class="aslr-ratings">
+<div class="ar-item ar-good">Versioned: {sbom.components_with_version}/{sbom.total_components}</div>
+<div class="ar-item ar-excellent">CPE Mapped: {sbom.components_with_cpe}/{sbom.total_components}</div>
+<div class="ar-item ar-moderate">Dep Links: {len(sbom.dependency_tree)}</div>
+{f'<div class="ar-item ar-weak">Pkg Source: {sbom.package_manager_source}</div>' if sbom.package_manager_source else ''}
+</div>
+</div>'''
+
     def build_class_section(title, items, css_class):
         if not items: return ""
         content = ""
@@ -3135,7 +3826,7 @@ h1{font-size:18px;font-weight:600;margin-bottom:5px}
 table{width:100%;border-collapse:collapse;font-size:11px}
 th{text-align:left;padding:6px;border-bottom:1px solid var(--bd);color:var(--dm);font-weight:500}
 td{padding:6px;border-bottom:1px solid var(--bd)}
-.fn{font-weight:500}.ok{color:var(--ok)}.bad{color:var(--bad)}.wrn{color:var(--wrn)}
+.fn{font-weight:500}.ok{color:var(--ok)}.bad{color:var(--bad)}.wrn{color:var(--wrn)}.dm{color:var(--dm)}
 .rb{background:rgba(255,51,51,0.08)}.rw{background:rgba(255,170,0,0.05)}
 .loc{color:var(--dm);font-size:10px}
 .cs{margin-bottom:10px;border:1px solid var(--bd)}
@@ -3251,6 +3942,12 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 
 {f'<div class="card"><div class="card-title">Configuration Issues ({len(result.config_issues)})</div><div class="tbl-wrap tbl-scroll"><table><thead><tr><th>Location</th><th>Issue</th><th>Context</th></tr></thead><tbody>{config_rows}</tbody></table></div></div>' if result.config_issues else ''}
 
+{sbom_summary_html}
+
+{f'<div class="card"><div class="card-title">SBOM Components ({result.sbom.total_components})</div><div class="search-box"><input type="text" id="sbomSearch" placeholder="Search components..." onkeyup="filterTable(\'sbomSearch\', \'sbomTable\')"><button onclick="filterSbomType(\'sbomTable\', \'library\')">Libraries</button><button onclick="filterSbomType(\'sbomTable\', \'application\')">Apps</button><button onclick="filterSbomType(\'sbomTable\', \'firmware\')">Firmware</button><button onclick="filterSbomType(\'sbomTable\', \'\')">All</button></div><div class="tbl-wrap tbl-scroll"><table id="sbomTable"><thead><tr><th>Component</th><th>Version</th><th>Type</th><th>Supplier</th><th>CPE</th><th>License</th><th>Source</th><th>Security</th></tr></thead><tbody>{sbom_rows}</tbody></table></div></div>' if sbom_rows else ''}
+
+{f'<div class="card"><div class="card-title">Dependency Tree ({len(result.sbom.dependency_tree)} binaries)</div><div class="search-box"><input type="text" id="depTreeSearch" placeholder="Search dependencies..." onkeyup="filterTable(\'depTreeSearch\', \'depTreeTable\')"></div><div class="tbl-wrap tbl-scroll"><table id="depTreeTable"><thead><tr><th>Binary</th><th>NEEDED Library</th><th>Version</th></tr></thead><tbody>{sbom_dep_rows}</tbody></table></div></div>' if sbom_dep_rows else ''}
+
 <div class="card"><div class="card-title">Classification</div>
 <div class="search-box"><input type="text" id="classSearch" placeholder="Search binaries..." onkeyup="filterClassification('classSearch')"></div>
 <div id="classificationContent">
@@ -3336,6 +4033,18 @@ function filterClassification(inputId) {{
   for (var i = 0; i < items.length; i++) {{
     var text = items[i].textContent.toLowerCase();
     items[i].style.display = text.indexOf(filter) > -1 ? "" : "none";
+  }}
+}}
+function filterSbomType(tableId, compType) {{
+  var table = document.getElementById(tableId);
+  var rows = table.getElementsByTagName("tr");
+  for (var i = 1; i < rows.length; i++) {{
+    var cell = rows[i].getElementsByTagName("td")[2];
+    if (compType === "" || (cell && cell.textContent.trim() === compType)) {{
+      rows[i].style.display = "";
+    }} else {{
+      rows[i].style.display = "none";
+    }}
   }}
 }}
 </script>
@@ -3454,23 +4163,301 @@ def generate_json_report(result: ScanResult, output_path: Path):
         "config_issues": [
             {"file": c.file, "line": c.line, "issue": c.issue, "severity": c.severity.name}
             for c in result.config_issues
-        ]
+        ],
+        "sbom": {
+            "total_components": result.sbom.total_components,
+            "total_libraries": result.sbom.total_libraries,
+            "total_applications": result.sbom.total_applications,
+            "components_with_version": result.sbom.components_with_version,
+            "components_with_cpe": result.sbom.components_with_cpe,
+            "package_manager_source": result.sbom.package_manager_source,
+            "components": [
+                {
+                    "name": c.name, "version": c.version, "type": c.component_type,
+                    "supplier": c.supplier, "cpe": c.cpe, "purl": c.purl,
+                    "license": c.license_id, "path": c.path, "sha256": c.sha256,
+                    "source": c.source, "dependencies": c.dependencies,
+                    "security_flags": c.security_flags,
+                }
+                for c in result.sbom.components
+            ],
+            "dependency_tree": result.sbom.dependency_tree,
+        } if result.sbom else {}
     }
 
     output_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def generate_cyclonedx_sbom(sbom: SBOMResult, output_path: Path):
+    """Generate CycloneDX 1.5 JSON SBOM.
+    
+    CycloneDX is the preferred SBOM format for firmware/IoT security analysis.
+    Spec: https://cyclonedx.org/specification/overview/
+    """
+    components = []
+    
+    for comp in sbom.components:
+        cdx_comp = {
+            "type": comp.component_type,
+            "name": comp.name,
+            "version": comp.version if comp.version != "Unknown" else "",
+        }
+        
+        if comp.supplier:
+            cdx_comp["supplier"] = {"name": comp.supplier}
+        
+        if comp.description:
+            cdx_comp["description"] = comp.description
+        
+        if comp.license_id:
+            cdx_comp["licenses"] = [{"license": {"id": comp.license_id}}]
+        
+        if comp.cpe:
+            cdx_comp["cpe"] = comp.cpe
+        
+        if comp.purl:
+            cdx_comp["purl"] = comp.purl
+            cdx_comp["bom-ref"] = comp.purl
+        else:
+            cdx_comp["bom-ref"] = f"ref:{comp.name}:{comp.version}"
+        
+        # Hashes
+        if comp.sha256:
+            cdx_comp["hashes"] = [{"alg": "SHA-256", "content": comp.sha256}]
+        
+        # Properties (custom metadata)
+        props = []
+        if comp.path:
+            props.append({"name": "hardencheck:path", "value": comp.path})
+        if comp.source:
+            props.append({"name": "hardencheck:detection_source", "value": comp.source})
+        if comp.arch:
+            props.append({"name": "hardencheck:arch", "value": comp.arch})
+        if comp.security_flags:
+            for flag, value in comp.security_flags.items():
+                props.append({"name": f"hardencheck:security:{flag}", "value": str(value)})
+        
+        if props:
+            cdx_comp["properties"] = props
+        
+        components.append(cdx_comp)
+    
+    # Build dependency graph
+    dependencies = []
+    for binary_path, needed_libs in sbom.dependency_tree.items():
+        # Find the bom-ref for this binary
+        binary_name = Path(binary_path).name.lower()
+        dep_ref = None
+        for comp in sbom.components:
+            if comp.path == binary_path or comp.name.lower() == binary_name:
+                dep_ref = comp.purl or f"ref:{comp.name}:{comp.version}"
+                break
+        
+        if not dep_ref:
+            dep_ref = f"ref:{binary_name}:unknown"
+        
+        lib_refs = []
+        for lib in needed_libs:
+            lib_lower = lib.lower()
+            lib_base = lib_lower.split(".so")[0] if ".so" in lib_lower else lib_lower
+            
+            for comp in sbom.components:
+                if comp.name.lower() == lib_base or lib_lower.startswith(comp.name.lower()):
+                    lib_refs.append(comp.purl or f"ref:{comp.name}:{comp.version}")
+                    break
+            else:
+                lib_refs.append(f"ref:{lib}:unknown")
+        
+        dependencies.append({
+            "ref": dep_ref,
+            "dependsOn": lib_refs
+        })
+    
+    cdx_bom = {
+        "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "serialNumber": sbom.serial_number,
+        "version": 1,
+        "metadata": {
+            "timestamp": sbom.timestamp,
+            "tools": {
+                "components": [{
+                    "type": "application",
+                    "name": "HardenCheck",
+                    "version": VERSION,
+                    "supplier": {"name": "IOTSRG", "url": ["https://github.com/v33ru"]},
+                    "description": "Firmware Binary Security Analyzer with SBOM generation"
+                }]
+            },
+            "component": {
+                "type": "firmware",
+                "name": sbom.firmware_name,
+                "version": sbom.firmware_version,
+                "bom-ref": f"ref:firmware:{sbom.firmware_name}"
+            }
+        },
+        "components": components,
+        "dependencies": dependencies
+    }
+    
+    output_path.write_text(json.dumps(cdx_bom, indent=2), encoding="utf-8")
+
+
+def generate_spdx_sbom(sbom: SBOMResult, output_path: Path):
+    """Generate SPDX 2.3 JSON SBOM.
+    
+    SPDX is the ISO/IEC 5962:2021 standard for SBOMs.
+    Spec: https://spdx.github.io/spdx-spec/v2.3/
+    """
+    doc_namespace = f"https://spdx.org/spdxdocs/hardencheck-{sbom.firmware_name}-{uuid.uuid4()}"
+    
+    packages = []
+    relationships = []
+    
+    # Root document package
+    root_spdx_id = "SPDXRef-firmware"
+    packages.append({
+        "SPDXID": root_spdx_id,
+        "name": sbom.firmware_name,
+        "versionInfo": sbom.firmware_version or "NOASSERTION",
+        "downloadLocation": "NOASSERTION",
+        "filesAnalyzed": False,
+        "primaryPackagePurpose": "FIRMWARE",
+        "supplier": "NOASSERTION",
+    })
+    
+    relationships.append({
+        "spdxElementId": "SPDXRef-DOCUMENT",
+        "relationshipType": "DESCRIBES",
+        "relatedSpdxElement": root_spdx_id
+    })
+    
+    for idx, comp in enumerate(sbom.components):
+        spdx_id = f"SPDXRef-Package-{idx}"
+        
+        # Map component_type to SPDX primaryPackagePurpose
+        purpose_map = {
+            "library": "LIBRARY",
+            "application": "APPLICATION",
+            "firmware": "FIRMWARE",
+            "framework": "FRAMEWORK",
+            "os": "OPERATING_SYSTEM",
+        }
+        
+        pkg = {
+            "SPDXID": spdx_id,
+            "name": comp.name,
+            "versionInfo": comp.version if comp.version and comp.version != "Unknown" else "NOASSERTION",
+            "downloadLocation": "NOASSERTION",
+            "filesAnalyzed": False,
+            "primaryPackagePurpose": purpose_map.get(comp.component_type, "LIBRARY"),
+        }
+        
+        if comp.supplier:
+            pkg["supplier"] = f"Organization: {comp.supplier}"
+        else:
+            pkg["supplier"] = "NOASSERTION"
+        
+        if comp.license_id:
+            pkg["licenseConcluded"] = comp.license_id
+            pkg["licenseDeclared"] = comp.license_id
+        else:
+            pkg["licenseConcluded"] = "NOASSERTION"
+            pkg["licenseDeclared"] = "NOASSERTION"
+        
+        if comp.sha256:
+            pkg["checksums"] = [{"algorithm": "SHA256", "checksumValue": comp.sha256}]
+        
+        if comp.cpe:
+            pkg["externalRefs"] = [{
+                "referenceCategory": "SECURITY",
+                "referenceType": "cpe23Type",
+                "referenceLocator": comp.cpe
+            }]
+            if comp.purl:
+                pkg["externalRefs"].append({
+                    "referenceCategory": "PACKAGE_MANAGER",
+                    "referenceType": "purl",
+                    "referenceLocator": comp.purl
+                })
+        elif comp.purl:
+            pkg["externalRefs"] = [{
+                "referenceCategory": "PACKAGE_MANAGER",
+                "referenceType": "purl",
+                "referenceLocator": comp.purl
+            }]
+        
+        if comp.description:
+            pkg["description"] = comp.description
+        
+        packages.append(pkg)
+        
+        # Relationship: firmware CONTAINS component
+        relationships.append({
+            "spdxElementId": root_spdx_id,
+            "relationshipType": "CONTAINS",
+            "relatedSpdxElement": spdx_id
+        })
+    
+    # Add DEPENDS_ON relationships from dependency tree
+    comp_spdx_map = {}  # name -> spdx_id
+    for idx, comp in enumerate(sbom.components):
+        comp_spdx_map[comp.name.lower()] = f"SPDXRef-Package-{idx}"
+        if comp.path:
+            comp_spdx_map[Path(comp.path).name.lower()] = f"SPDXRef-Package-{idx}"
+    
+    for binary_path, needed_libs in sbom.dependency_tree.items():
+        binary_name = Path(binary_path).name.lower()
+        src_id = comp_spdx_map.get(binary_name)
+        if not src_id:
+            continue
+        
+        for lib in needed_libs:
+            lib_base = lib.lower().split(".so")[0] if ".so" in lib.lower() else lib.lower()
+            dst_id = comp_spdx_map.get(lib_base) or comp_spdx_map.get(lib.lower())
+            if dst_id:
+                relationships.append({
+                    "spdxElementId": src_id,
+                    "relationshipType": "DEPENDS_ON",
+                    "relatedSpdxElement": dst_id
+                })
+    
+    spdx_doc = {
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": f"hardencheck-sbom-{sbom.firmware_name}",
+        "documentNamespace": doc_namespace,
+        "creationInfo": {
+            "created": sbom.timestamp,
+            "creators": [
+                f"Tool: HardenCheck-{VERSION}",
+                "Organization: IOTSRG"
+            ],
+            "licenseListVersion": "3.22"
+        },
+        "packages": packages,
+        "relationships": relationships
+    }
+    
+    output_path.write_text(json.dumps(spdx_doc, indent=2), encoding="utf-8")
 
 
 
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="HardenCheck v1.0 - Firmware Binary Security Analyzer with ASLR Entropy Analysis",
+        description="HardenCheck v1.0 - Firmware Binary Security Analyzer with ASLR Entropy Analysis & SBOM",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s /path/to/firmware
   %(prog)s /path/to/firmware -o report.html --json
   %(prog)s /path/to/firmware -t 8 -v --slim
+  %(prog)s /path/to/firmware --sbom cyclonedx       # CycloneDX 1.5 SBOM
+  %(prog)s /path/to/firmware --sbom spdx             # SPDX 2.3 SBOM
+  %(prog)s /path/to/firmware --sbom all --json       # Both SBOMs + JSON report
 
 Required Tools:
   apt install radare2 devscripts pax-utils elfutils binutils
@@ -3495,6 +4482,8 @@ Scoring Model:
                         help="Generate slim HTML report (no CSS, smaller size)")
     parser.add_argument("--extended", action="store_true",
                         help="Enable extended checks (Stack Clash, CFI) - requires hardening-check tool")
+    parser.add_argument("--sbom", choices=["cyclonedx", "spdx", "all"], default=None,
+                        help="Generate SBOM: cyclonedx (CycloneDX 1.5), spdx (SPDX 2.3), or all")
     parser.add_argument("--version", action="version",
                         version=f"HardenCheck v{VERSION}")
 
@@ -3520,6 +4509,20 @@ Scoring Model:
             json_path = output_path.with_suffix(".json")
             generate_json_report(result, json_path)
             print(f"[+] JSON Report: {json_path}")
+
+        # SBOM generation
+        if args.sbom and result.sbom:
+            sbom_base = output_path.with_suffix("")
+            
+            if args.sbom in ("cyclonedx", "all"):
+                cdx_path = Path(f"{sbom_base}_sbom_cyclonedx.json")
+                generate_cyclonedx_sbom(result.sbom, cdx_path)
+                print(f"[+] CycloneDX 1.5 SBOM: {cdx_path}")
+            
+            if args.sbom in ("spdx", "all"):
+                spdx_path = Path(f"{sbom_base}_sbom_spdx.json")
+                generate_spdx_sbom(result.sbom, spdx_path)
+                print(f"[+] SPDX 2.3 SBOM: {spdx_path}")
 
     except KeyboardInterrupt:
         print("\n[!] Scan interrupted by user")
