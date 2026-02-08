@@ -55,11 +55,11 @@
 └──────────┬──────────┘
            │
            ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           SECURITY ANALYSIS                                 │
-├──────────────┬──────────────┬──────────────┬──────────────┬─────────────────┤
-│              │              │              │              │                 │
-▼              ▼              ▼              ▼              ▼                 │
+┌───────────────────────────────────────────────────────────────────────────┐
+│                           SECURITY ANALYSIS                               │
+├──────────────┬──────────────┬──────────────┬──────────────┬───────────────┤
+│              │              │              │              │               │
+▼              ▼              ▼              ▼              ▼               │
 ┌───────────┐ ┌───────────┐ ┌────────────┐ ┌────────────┐ ┌──────────────┐  │
 │  BINARY   │ │   ASLR    │ │   DAEMON   │ │   BANNED   │ │ SECRETS SCAN │  │
 │ HARDENING │ │  ENTROPY  │ │ DETECTION  │ │ FUNCTIONS  │ │ ──────────── │  │
@@ -71,23 +71,23 @@
 │ • Fortify │ │ • MIPS/RV │ │ • snmpd    │ │ • rand()   │                   │
 │ • CFI     │ │ • PPC     │ │ • upnpd    │ │ • mktemp() │                   │
 └─────┬─────┘ └─────┬─────┘ └─────┬──────┘ └─────┬──────┘                   │
-      │             │             │              │                           │
-      └──────┬──────┴─────────────┴──────────────┘                           │
-             │                                                               │
-             ▼                                                               │
-┌─────────────────────────────────────────────────────────────────────────────┤
-│                        SBOM GENERATION                                      │
-│  ─────────────────────────────────────────                                  │
-│  Layer 1: Package Manager (opkg / dpkg)                                     │
-│  Layer 2: ELF Analysis (NEEDED + soname + strings)                          │
-│  Layer 3: Firmware Profile (kernel, busybox, known components)              │
-│                                                                             │
-│  • CPE 2.3 mapping (90+ IoT components)                                     │
-│  • PURL generation                                                          │
-│  • License resolution                                                       │
-│  • Dependency tree (binary → NEEDED libs)                                   │
-│  • Security flags per component                                             │
-└──────────────────────┬──────────────────────────────────────────────────────┘
+      │             │             │              │                          │
+      └──────┬──────┴─────────────┴──────────────┘                          │
+             │                                                              │
+             ▼                                                              │
+┌───────────────────────────────────────────────────────────────────────────┤
+│                        SBOM GENERATION                                    │
+│  ─────────────────────────────────────────                                │
+│  Layer 1: Package Manager (opkg / dpkg)                                   │
+│  Layer 2: ELF Analysis (NEEDED + soname + strings)                        │
+│  Layer 3: Firmware Profile (kernel, busybox, known components)            │
+│                                                                           │
+│  • CPE 2.3 mapping (90+ IoT components)                                   │
+│  • PURL generation                                                        │
+│  • License resolution                                                     │
+│  • Dependency tree (binary → NEEDED libs)                                 │
+│  • Security flags per component                                           │
+└──────────────────────┬────────────────────────────────────────────────────┘
                        │
                        ▼
           ┌─────────────────────┐
@@ -113,7 +113,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                           OUTPUT                                │
 ├───────────────┬───────────────┬─────────────────┬───────────────┤
-│  HTML Report  │  JSON Report  │  CycloneDX 1.5  │  SPDX 2.3    │
+│  HTML Report  │  JSON Report  │  CycloneDX 1.5  │  SPDX 2.3     │
 │  (Interactive │  (Machine     │  SBOM           │  SBOM         │
 │   + Search)   │   Readable)   │  (→ Grype/Trivy)│  (ISO 5962)   │
 └───────────────┴───────────────┴─────────────────┴───────────────┘
