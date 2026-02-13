@@ -136,9 +136,6 @@ python3 hardencheck.py /path/to/firmware -o report.html --json
 # 3. With SBOM
 python3 hardencheck.py /path/to/firmware --sbom all --json
 ```
-
-> Zero Python dependencies — stdlib only. No pip install needed.
-
 ---
 
 ## Features
