@@ -16,6 +16,7 @@ import re
 import stat
 import struct
 import uuid
+import fnmatch
 import html as html_module
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -238,6 +239,99 @@ class ConfigFinding:
 
 
 @dataclass
+class SecurityTestFinding:
+    """Security testing finding."""
+    test_type: str  # "weak_crypto", "cve", "default_creds", "rop_gadgets"
+    component: str  # Component/service name
+    version: str = ""
+    issue: str = ""
+    severity: Severity = Severity.INFO
+    details: str = ""
+    recommendation: str = ""
+    cve_id: str = ""  # For CVE findings
+    affected_path: str = ""  # File/binary path
+
+
+@dataclass
+class CryptographicBinary:
+    """Security-sensitive cryptographic utility binary."""
+    name: str
+    path: str
+    binary_type: BinaryType
+    version: str = "Unknown"
+    purpose: str = ""  # "encrypt", "decrypt", "keygen", "hash", "sign", "verify", etc.
+    has_network: bool = False
+    security_flags: Dict = field(default_factory=dict)  # nx, pie, canary, etc.
+    risk_level: str = "MEDIUM"  # Based on purpose and security flags
+    issues: List[str] = field(default_factory=list)
+    recommendation: str = ""
+
+
+@dataclass
+class FirmwareSigningInfo:
+    """Firmware signing and secure boot information."""
+    is_signed: bool = False
+    signing_method: str = "Unknown"  # "uImage+FIT", "GRUB", "UEFI", "Custom", "None"
+    secure_boot_enabled: bool = False
+    signature_files: List[str] = field(default_factory=list)
+    bootloader_config: Dict[str, str] = field(default_factory=dict)
+    issues: List[str] = field(default_factory=list)
+    recommendation: str = ""
+
+
+@dataclass
+class ServicePrivilegeInfo:
+    """Service privilege and isolation information."""
+    service_name: str
+    binary_path: str
+    runs_as_root: bool = False
+    user: str = "root"
+    group: str = "root"
+    has_capabilities: bool = False
+    capabilities: List[str] = field(default_factory=list)
+    chroot_jail: Optional[str] = None
+    namespace_isolation: bool = False
+    cgroup_restrictions: bool = False
+    risk_level: str = "MEDIUM"
+    issues: List[str] = field(default_factory=list)
+    recommendation: str = ""
+
+
+@dataclass
+class KernelHardeningInfo:
+    """Kernel security hardening configuration."""
+    config_available: bool = False
+    config_source: str = ""  # "config.gz", "config", "embedded"
+    kaslr_enabled: bool = False
+    smep_enabled: bool = False
+    smap_enabled: bool = False
+    pxn_enabled: bool = False  # ARM Privileged Execute Never
+    stack_protector: bool = False
+    fortify_source: bool = False
+    usercopy_protection: bool = False
+    rodata_enforced: bool = False
+    dmesg_restricted: bool = False
+    hardening_score: int = 0
+    issues: List[str] = field(default_factory=list)
+    recommendations: List[str] = field(default_factory=list)
+
+
+@dataclass
+class UpdateMechanismInfo:
+    """Firmware update mechanism analysis."""
+    update_system: str = "Unknown"  # "OTA", "SWUpdate", "RAUC", "Custom", "None"
+    update_binary: Optional[str] = None
+    update_config: Optional[str] = None
+    uses_https: bool = False
+    uses_signing: bool = False
+    has_rollback_protection: bool = False
+    update_server: Optional[str] = None
+    issues: List[str] = field(default_factory=list)
+    risk_level: str = "MEDIUM"
+    recommendation: str = ""
+
+
+@dataclass
 class SBOMComponent:
     """Software Bill of Materials component."""
     name: str
@@ -289,6 +383,12 @@ class ScanResult:
     credentials: List[CredentialFinding]
     certificates: List[CertificateFinding]
     config_issues: List[ConfigFinding]
+    security_tests: List[SecurityTestFinding] = field(default_factory=list)
+    crypto_binaries: List[CryptographicBinary] = field(default_factory=list)
+    firmware_signing: Optional[FirmwareSigningInfo] = None
+    service_privileges: List[ServicePrivilegeInfo] = field(default_factory=list)
+    kernel_hardening: Optional[KernelHardeningInfo] = None
+    update_mechanism: Optional[UpdateMechanismInfo] = None
     aslr_summary: Dict = field(default_factory=dict)
     missing_tools: List[str] = field(default_factory=list)
     sbom: Optional[SBOMResult] = None
@@ -497,6 +597,125 @@ CONFIG_INFO_PATTERNS = [
 ]
 
 CERT_EXTENSIONS = {".pem", ".crt", ".cer", ".der", ".key", ".p12", ".pfx", ".jks"}
+
+# ============================================================================
+# Security Testing: Weak Crypto Patterns
+# ============================================================================
+WEAK_CRYPTO_PATTERNS = [
+    (r'ssl_protocols?\s+SSLv2', "SSLv2 protocol enabled (deprecated, insecure)", Severity.CRITICAL),
+    (r'ssl_protocols?\s+SSLv3', "SSLv3 protocol enabled (deprecated, POODLE vulnerable)", Severity.HIGH),
+    (r'tls_protocols?\s+TLSv1\s', "TLSv1.0 enabled (deprecated, weak)", Severity.HIGH),
+    (r'tls_protocols?\s+TLSv1\.1\s', "TLSv1.1 enabled (deprecated)", Severity.MEDIUM),
+    (r'CipherSuite\s+.*RC4', "RC4 cipher enabled (deprecated, weak)", Severity.HIGH),
+    (r'CipherSuite\s+.*MD5', "MD5 hash in cipher suite (weak)", Severity.MEDIUM),
+    (r'CipherSuite\s+.*DES', "DES cipher enabled (deprecated, weak)", Severity.HIGH),
+    (r'CipherSuite\s+.*3DES', "3DES cipher enabled (deprecated)", Severity.MEDIUM),
+    (r'--tls-version-min\s+1\.0', "Minimum TLS version 1.0 (weak)", Severity.HIGH),
+    (r'--tls-version-min\s+1\.1', "Minimum TLS version 1.1 (deprecated)", Severity.MEDIUM),
+    (r'openssl\s+.*-ssl2', "OpenSSL SSLv2 support", Severity.CRITICAL),
+    (r'openssl\s+.*-ssl3', "OpenSSL SSLv3 support", Severity.HIGH),
+    (r'cipher\s+.*RC4', "RC4 cipher usage", Severity.HIGH),
+    (r'cipher\s+.*DES', "DES cipher usage", Severity.HIGH),
+]
+
+# Known vulnerable component versions (simplified - in production, use CVE DB)
+VULNERABLE_VERSIONS = {
+    "openssl": {
+        "<1.0.1": "Multiple critical CVEs (Heartbleed, etc.)",
+        "<1.0.2": "Multiple high-severity CVEs",
+        "<1.1.0": "Several medium-severity CVEs",
+    },
+    "dropbear": {
+        "<2018.76": "CVE-2018-15599 (pre-auth remote code execution)",
+        "<2020.80": "Multiple security fixes",
+    },
+    "busybox": {
+        "<1.28.0": "Multiple CVEs including shell injection",
+        "<1.31.0": "Several security fixes",
+    },
+    "dnsmasq": {
+        "<2.78": "CVE-2017-14491-14496 (multiple RCE vulnerabilities)",
+        "<2.80": "Additional security fixes",
+    },
+    "nginx": {
+        "<1.10.0": "Multiple CVEs",
+        "<1.14.0": "Security fixes",
+    },
+    "lighttpd": {
+        "<1.4.50": "Multiple CVEs",
+    },
+}
+
+# Default credentials to test (service -> [(username, password), ...])
+DEFAULT_CREDENTIALS = {
+    "ssh": [("root", "root"), ("admin", "admin"), ("root", ""), ("admin", ""), ("root", "toor")],
+    "telnet": [("root", "root"), ("admin", "admin"), ("root", ""), ("admin", "")],
+    "http": [("admin", "admin"), ("root", "root"), ("admin", ""), ("", "")],
+    "ftp": [("anonymous", ""), ("ftp", "ftp"), ("admin", "admin")],
+    "snmp": [("public", ""), ("private", "")],
+}
+
+# ============================================================================
+# Firmware Signing & Secure Boot Patterns
+# ============================================================================
+SIGNATURE_FILE_PATTERNS = [
+    r'\.sig$', r'\.sign$', r'\.asc$', r'\.gpg$',
+    r'\.p7s$', r'\.p7m$', r'\.pem\.sig$',
+    r'\.dtb\.sig$', r'\.fit\.sig$', r'\.img\.sig$',
+]
+
+SECURE_BOOT_MARKERS = {
+    "u-boot": ["CONFIG_FIT_SIGNATURE", "CONFIG_FIT_SIGNATURE_MAX_SIZE", "CONFIG_OF_CONTROL"],
+    "grub": ["GRUB_CMDLINE_LINUX.*lockdown", "GRUB_CMDLINE_LINUX.*secure"],
+    "uefi": ["SecureBoot", "PK", "KEK", "db", "dbx"],
+    "uboot_env": ["bootcmd.*verify", "bootcmd.*check_signature"],
+}
+
+UPDATE_SYSTEM_PATTERNS = {
+    "swupdate": ["swupdate", "swupdate-client", "/etc/swupdate"],
+    "rauc": ["rauc", "/etc/rauc"],
+    "mender": ["mender", "mender-client", "/etc/mender"],
+    "ostree": ["ostree", "/ostree"],
+    "custom_ota": ["ota", "firmware-update", "fwupdate"],
+}
+
+# ============================================================================
+# Cryptographic Binary Detection Patterns
+# ============================================================================
+CRYPTO_BINARY_PATTERNS = {
+    # Encryption/Decryption utilities
+    "encrypt": ("encrypt", "MEDIUM", "Encryption utility - verify key management and algorithm strength"),
+    "decrypt": ("decrypt", "HIGH", "Decryption utility - CRITICAL: verify key storage and access controls"),
+    "crypt": ("encrypt", "MEDIUM", "Cryptographic utility - verify algorithm and key handling"),
+    
+    # Key generation and management
+    "keygen": ("keygen", "MEDIUM", "Key generation utility - verify entropy source"),
+    "genkey": ("keygen", "MEDIUM", "Key generation utility - verify randomness"),
+    "keytool": ("keygen", "MEDIUM", "Key management utility - verify key storage"),
+    "openssl": ("keygen", "MEDIUM", "OpenSSL utility - verify configuration"),
+    
+    # Hashing utilities
+    "hash": ("hash", "LOW", "Hashing utility - verify algorithm strength"),
+    "md5sum": ("hash", "MEDIUM", "MD5 hashing (weak) - consider SHA-256+"),
+    "sha1sum": ("hash", "MEDIUM", "SHA-1 hashing (deprecated) - consider SHA-256+"),
+    "sha256sum": ("hash", "LOW", "SHA-256 hashing utility"),
+    "sha512sum": ("hash", "LOW", "SHA-512 hashing utility"),
+    
+    # Signing/Verification
+    "sign": ("sign", "MEDIUM", "Digital signing utility - verify key protection"),
+    "verify": ("verify", "LOW", "Signature verification utility"),
+    "gpg": ("sign", "MEDIUM", "GPG encryption/signing - verify keyring security"),
+    "gpg2": ("sign", "MEDIUM", "GPG2 encryption/signing - verify keyring security"),
+    
+    # Password/Key derivation
+    "pbkdf2": ("keygen", "MEDIUM", "PBKDF2 key derivation - verify iteration count"),
+    "scrypt": ("keygen", "MEDIUM", "Scrypt key derivation utility"),
+    "bcrypt": ("keygen", "MEDIUM", "Bcrypt password hashing utility"),
+    
+    # Certificate utilities
+    "certtool": ("keygen", "MEDIUM", "Certificate tool - verify key generation"),
+    "certutil": ("keygen", "MEDIUM", "Certificate utility - verify key storage"),
+}
 
 # ============================================================================
 # SBOM: CPE/PURL mapping for known IoT firmware components
@@ -991,7 +1210,9 @@ class ASLREntropyAnalyzer:
 class HardenCheck:
     """Firmware security analyzer."""
 
-    def __init__(self, target: Path, threads: int = 4, verbose: bool = False, extended: bool = False):
+    def __init__(self, target: Path, threads: int = 4, verbose: bool = False, extended: bool = False,
+                 include_patterns: Optional[List[str]] = None, exclude_patterns: Optional[List[str]] = None,
+                 quiet: bool = False):
         """Initialize scanner.
         
         Args:
@@ -999,11 +1220,17 @@ class HardenCheck:
             threads: Number of analysis threads
             verbose: Enable verbose output
             extended: Enable extended checks (Stack Clash, CFI)
+            include_patterns: If set, only scan paths matching any of these globs (relative to target)
+            exclude_patterns: If set, skip paths matching any of these globs (relative to target)
+            quiet: If True, suppress banner and progress output (for CI/scripting)
         """
         self.target = Path(target).resolve()
         self.threads = min(max(threads, 1), 16)
         self.verbose = verbose
         self.extended = extended
+        self.include_patterns = include_patterns or []
+        self.exclude_patterns = exclude_patterns or []
+        self.quiet = quiet
         self.tools = self._detect_tools()
         self.aslr_analyzer = ASLREntropyAnalyzer(self.tools)
 
@@ -1014,7 +1241,9 @@ class HardenCheck:
         for cmd in ["radare2.rabin2", "rabin2"]:
             path = shutil.which(cmd)
             if path:
-                tools["rabin2"] = cmd
+                # Store the absolute path so we don't depend on PATH later,
+                # which is intentionally restricted in SECURE_ENV.
+                tools["rabin2"] = path
                 break
 
         tool_commands = [
@@ -1027,12 +1256,11 @@ class HardenCheck:
         for name, cmd in tool_commands:
             path = shutil.which(cmd)
             if path:
-                tools[name] = cmd
+                tools[name] = path
 
-        if shutil.which("eu-readelf"):
-            tools["readelf"] = "eu-readelf"
-        elif shutil.which("readelf"):
-            tools["readelf"] = "readelf"
+        readelf_path = shutil.which("eu-readelf") or shutil.which("readelf")
+        if readelf_path:
+            tools["readelf"] = readelf_path
 
         return tools
 
@@ -1136,6 +1364,15 @@ class HardenCheck:
 
             for filename in files:
                 filepath = Path(root) / filename
+
+                try:
+                    rel = filepath.relative_to(self.target).as_posix()
+                except ValueError:
+                    continue
+                if self.include_patterns and not any(fnmatch.fnmatch(rel, p) for p in self.include_patterns):
+                    continue
+                if self.exclude_patterns and any(fnmatch.fnmatch(rel, p) for p in self.exclude_patterns):
+                    continue
 
                 try:
                     if filepath.is_symlink():
@@ -2789,6 +3026,701 @@ class HardenCheck:
 
         return findings[:50]
 
+    def test_weak_crypto(self, config_files: List[Path], binaries: List[BinaryAnalysis]) -> List[SecurityTestFinding]:
+        """Test for weak cryptographic configurations and deprecated protocols."""
+        findings = []
+        
+        # Check config files for weak crypto patterns
+        for filepath in config_files:
+            content = safe_read_file(filepath, max_size=256 * 1024)
+            if not content:
+                continue
+            
+            try:
+                rel_path = str(filepath.relative_to(self.target))
+            except ValueError:
+                rel_path = str(filepath)
+            
+            for pattern, issue, severity in WEAK_CRYPTO_PATTERNS:
+                if re.search(pattern, content, re.IGNORECASE):
+                    findings.append(SecurityTestFinding(
+                        test_type="weak_crypto",
+                        component=filepath.name,
+                        issue=issue,
+                        severity=severity,
+                        affected_path=rel_path,
+                        recommendation="Update to modern TLS 1.2+ and remove deprecated ciphers"
+                    ))
+        
+        # Check binaries for weak crypto library versions
+        for binary in binaries:
+            if "ssl" in binary.filename.lower() or "crypto" in binary.filename.lower():
+                # Check if it's OpenSSL and extract version
+                if "openssl" in binary.filename.lower() or "libssl" in binary.filename.lower():
+                    version = self._extract_version(self.target / binary.path)
+                    if version and version != "Unknown":
+                        # Simple version comparison (in production, use proper semver parsing)
+                        for lib_name, vuln_versions in VULNERABLE_VERSIONS.items():
+                            if lib_name in binary.filename.lower():
+                                for version_range, cve_info in vuln_versions.items():
+                                    # Simplified check - in production, use proper version comparison
+                                    if version_range.startswith("<"):
+                                        max_version = version_range[1:]
+                                        if self._version_compare(version, max_version) < 0:
+                                            findings.append(SecurityTestFinding(
+                                                test_type="weak_crypto",
+                                                component=lib_name,
+                                                version=version,
+                                                issue=f"Vulnerable version detected: {version_range}",
+                                                severity=Severity.HIGH,
+                                                details=cve_info,
+                                                affected_path=str(binary.path),
+                                                recommendation=f"Upgrade {lib_name} to version >= {max_version}"
+                                            ))
+        
+        return findings
+
+    def test_cve_vulnerabilities(self, sbom: Optional[SBOMResult]) -> List[SecurityTestFinding]:
+        """Test detected components against known vulnerable versions."""
+        findings = []
+        
+        if not sbom:
+            return findings
+        
+        for component in sbom.components:
+            if component.version == "Unknown" or not component.version:
+                continue
+            
+            # Check against vulnerable versions database
+            comp_name_lower = component.name.lower()
+            for lib_name, vuln_versions in VULNERABLE_VERSIONS.items():
+                if lib_name in comp_name_lower:
+                    for version_range, cve_info in vuln_versions.items():
+                        if version_range.startswith("<"):
+                            max_version = version_range[1:]
+                            if self._version_compare(component.version, max_version) < 0:
+                                findings.append(SecurityTestFinding(
+                                    test_type="cve",
+                                    component=component.name,
+                                    version=component.version,
+                                    issue=f"Potentially vulnerable version: {version_range}",
+                                    severity=Severity.HIGH,
+                                    details=cve_info,
+                                    cve_id="Multiple CVEs",
+                                    affected_path=component.path,
+                                    recommendation=f"Upgrade {component.name} to version >= {max_version}"
+                                ))
+                    break
+        
+        return findings
+
+    def test_default_credentials(self, config_files: List[Path], daemons: List[Daemon]) -> List[SecurityTestFinding]:
+        """Test for default credentials in configuration files."""
+        findings = []
+        
+        # Check config files for default credentials
+        for filepath in config_files:
+            content = safe_read_file(filepath, max_size=256 * 1024)
+            if not content:
+                continue
+            
+            try:
+                rel_path = str(filepath.relative_to(self.target))
+            except ValueError:
+                rel_path = str(filepath)
+            
+            filename_lower = filepath.name.lower()
+            
+            # Check for common default credential patterns
+            default_patterns = [
+                (r'(?i)(?:user|username|login)\s*[=:]\s*["\']?(?:admin|root|guest)["\']?', "Default username detected"),
+                (r'(?i)(?:pass|password|pwd)\s*[=:]\s*["\']?(?:admin|password|1234|root|toor|pass)["\']?', "Weak/default password detected"),
+                (r'(?i)admin\s*[=:]\s*["\']?admin["\']?', "Default admin:admin credentials"),
+                (r'(?i)root\s*[=:]\s*["\']?(?:root|toor|"")["\']?', "Default root credentials"),
+            ]
+            
+            for pattern, issue_desc in default_patterns:
+                matches = re.finditer(pattern, content)
+                for match in matches:
+                    line_num = content[:match.start()].count('\n') + 1
+                    snippet = content[max(0, match.start()-20):match.end()+20].replace('\n', ' ')
+                    
+                    findings.append(SecurityTestFinding(
+                        test_type="default_creds",
+                        component=filepath.name,
+                        issue=issue_desc,
+                        severity=Severity.HIGH,
+                        details=f"Line {line_num}: {snippet}",
+                        affected_path=rel_path,
+                        recommendation="Change default credentials immediately"
+                    ))
+        
+        # Check detected daemons for known default credential services
+        for daemon in daemons:
+            daemon_name_lower = daemon.name.lower()
+            if daemon_name_lower in ["telnetd", "httpd", "uhttpd", "lighttpd", "nginx", "apache"]:
+                findings.append(SecurityTestFinding(
+                    test_type="default_creds",
+                    component=daemon.name,
+                    version=daemon.version,
+                    issue="Service detected - test for default credentials",
+                    severity=Severity.MEDIUM,
+                    details=f"Service {daemon.name} may have default credentials",
+                    affected_path=daemon.path,
+                    recommendation=f"Test {daemon.name} for default credentials before deployment"
+                ))
+        
+        return findings
+
+    def _version_compare(self, v1: str, v2: str) -> int:
+        """Simple version comparison. Returns -1 if v1 < v2, 0 if equal, 1 if v1 > v2."""
+        try:
+            # Remove non-numeric prefixes/suffixes and split by dots
+            def normalize(v):
+                v = re.sub(r'[^0-9.]', '', v.split('-')[0].split('+')[0])
+                parts = [int(x) for x in v.split('.') if x.isdigit()]
+                return parts if parts else [0]
+            
+            parts1 = normalize(v1)
+            parts2 = normalize(v2)
+            
+            # Pad with zeros to same length
+            max_len = max(len(parts1), len(parts2))
+            parts1.extend([0] * (max_len - len(parts1)))
+            parts2.extend([0] * (max_len - len(parts2)))
+            
+            for p1, p2 in zip(parts1, parts2):
+                if p1 < p2:
+                    return -1
+                elif p1 > p2:
+                    return 1
+            return 0
+        except (ValueError, AttributeError):
+            return 0  # If comparison fails, assume equal
+
+    def detect_cryptographic_binaries(self, binaries: List[BinaryAnalysis]) -> List[CryptographicBinary]:
+        """Detect security-sensitive cryptographic utility binaries."""
+        crypto_binaries = []
+        
+        for binary in binaries:
+            filename_lower = binary.filename.lower()
+            
+            # Check against known cryptographic binary patterns
+            for pattern, (purpose, risk_level, recommendation) in CRYPTO_BINARY_PATTERNS.items():
+                if pattern in filename_lower:
+                    # Get binary analysis for security flags
+                    security_flags = {
+                        "nx": binary.nx,
+                        "pie": binary.pie,
+                        "canary": binary.canary,
+                        "relro": binary.relro,
+                        "fortify": binary.fortify,
+                        "stripped": binary.stripped,
+                    }
+                    
+                    # Check if binary has network capabilities
+                    filepath = self.target / binary.path
+                    has_network = self._has_network_symbols(filepath)
+                    
+                    # Extract version
+                    version = self._extract_version(filepath)
+                    
+                    # Assess issues based on security flags
+                    issues = []
+                    if binary.nx is False:
+                        issues.append("No NX protection - code execution risk")
+                    if binary.pie is False and binary.binary_type == BinaryType.EXECUTABLE:
+                        issues.append("No PIE - ASLR bypass possible")
+                    if binary.canary is False:
+                        issues.append("No stack canary - buffer overflow risk")
+                    if binary.relro != "full":
+                        issues.append(f"RELRO: {binary.relro} - GOT overwrite risk")
+                    if has_network and purpose in ("decrypt", "encrypt"):
+                        issues.append("Network-enabled crypto binary - potential key exposure")
+                    
+                    # Adjust risk level based on issues
+                    final_risk = risk_level
+                    if issues and risk_level == "MEDIUM":
+                        if any("CRITICAL" in i or "No NX" in i for i in issues):
+                            final_risk = "HIGH"
+                    elif purpose == "decrypt" and issues:
+                        final_risk = "HIGH"
+                    
+                    crypto_binaries.append(CryptographicBinary(
+                        name=binary.filename,
+                        path=str(binary.path),
+                        binary_type=binary.binary_type,
+                        version=version,
+                        purpose=purpose,
+                        has_network=has_network,
+                        security_flags=security_flags,
+                        risk_level=final_risk,
+                        issues=issues,
+                        recommendation=recommendation
+                    ))
+                    break  # Only match once per binary
+        
+        return crypto_binaries
+
+    def detect_firmware_signing(self) -> FirmwareSigningInfo:
+        """Detect firmware signing and secure boot configuration.
+        
+        Analyzes firmware for:
+        - Signed image files (uImage+FIT, GRUB, UEFI)
+        - Secure boot markers in bootloader configs
+        - Signature file presence
+        
+        Returns:
+            FirmwareSigningInfo with signing status and secure boot info
+        """
+        signing_info = FirmwareSigningInfo()
+        signature_files = []
+        bootloader_config = {}
+        
+        # Search for signature files
+        for root, dirs, files in os.walk(self.target):
+            for filename in files:
+                filepath = Path(root) / filename
+                rel_path = str(filepath.relative_to(self.target))
+                
+                for pattern in SIGNATURE_FILE_PATTERNS:
+                    if re.search(pattern, filename, re.IGNORECASE):
+                        signature_files.append(rel_path)
+                        signing_info.is_signed = True
+                        break
+        
+        # Check bootloader configurations
+        bootloader_configs = [
+            "boot/u-boot.env", "boot/grub.cfg", "boot/grub/grub.cfg",
+            "etc/default/grub", "boot/efi/EFI/BOOT/grub.cfg",
+            "boot/loader/entries", "etc/bootloader.d",
+        ]
+        
+        for config_path in bootloader_configs:
+            full_path = self.target / config_path
+            if full_path.exists():
+                content = safe_read_file(full_path)
+                if content:
+                    # Check for secure boot markers
+                    for bootloader, markers in SECURE_BOOT_MARKERS.items():
+                        for marker in markers:
+                            if re.search(marker, content, re.IGNORECASE):
+                                signing_info.secure_boot_enabled = True
+                                bootloader_config[bootloader] = marker
+                                break
+                    
+                    # Detect signing method
+                    if "FIT" in content or "fit_image" in content.lower():
+                        signing_info.signing_method = "uImage+FIT"
+                        signing_info.is_signed = True
+                    elif "grub" in config_path.lower():
+                        signing_info.signing_method = "GRUB"
+                        if "lockdown" in content.lower() or "secure" in content.lower():
+                            signing_info.secure_boot_enabled = True
+                    elif "efi" in config_path.lower():
+                        signing_info.signing_method = "UEFI"
+        
+        # Check for U-Boot environment variables
+        uboot_env_paths = [
+            "boot/u-boot.env", "boot/uEnv.txt", "etc/u-boot.env",
+        ]
+        for env_path in uboot_env_paths:
+            full_path = self.target / env_path
+            if full_path.exists():
+                content = safe_read_file(full_path)
+                if content and ("verify" in content.lower() or "signature" in content.lower()):
+                    signing_info.is_signed = True
+                    signing_info.signing_method = "uImage+FIT"
+                    bootloader_config["u-boot"] = "signature_verification"
+        
+        signing_info.signature_files = signature_files
+        signing_info.bootloader_config = bootloader_config
+        
+        # Assess issues
+        if not signing_info.is_signed:
+            signing_info.issues.append("Firmware images are not signed")
+            signing_info.recommendation = "Implement firmware signing to prevent tampering"
+        elif not signing_info.secure_boot_enabled:
+            signing_info.issues.append("Secure boot is not enabled despite signing")
+            signing_info.recommendation = "Enable secure boot to enforce signature verification at boot"
+        else:
+            signing_info.recommendation = "Firmware signing and secure boot are properly configured"
+        
+        return signing_info
+
+    def detect_service_privileges(self, binaries: List[BinaryAnalysis], 
+                                   daemons: List[Daemon]) -> List[ServicePrivilegeInfo]:
+        """Analyze service privileges from init scripts and systemd units.
+        
+        Extracts:
+        - User/group service runs as
+        - Linux capabilities
+        - Chroot/jail usage
+        - Namespace isolation
+        
+        Args:
+            binaries: List of analyzed binaries
+            daemons: List of detected daemons
+            
+        Returns:
+            List of ServicePrivilegeInfo for each service
+        """
+        privilege_info = []
+        daemon_binaries = {d.binary.lower(): d for d in daemons}
+        
+        # Search init scripts and systemd units
+        init_paths = [
+            "etc/init.d", "etc/rc.d", "etc/rc.local",
+            "usr/lib/systemd/system", "etc/systemd/system",
+            "lib/systemd/system", "run/systemd/system",
+        ]
+        
+        for init_dir in init_paths:
+            full_dir = self.target / init_dir
+            if not full_dir.exists():
+                continue
+            
+            for filepath in full_dir.rglob("*"):
+                if not filepath.is_file():
+                    continue
+                
+                content = safe_read_file(filepath, max_size=64 * 1024)
+                if not content:
+                    continue
+                
+                # Extract service name
+                service_name = filepath.stem
+                if service_name.startswith("."):
+                    continue
+                
+                # Find binary path
+                binary_path = None
+                binary_name = None
+                
+                # Look for ExecStart, command, or binary reference
+                exec_patterns = [
+                    r'ExecStart\s*=\s*(.+?)(?:\s|$)',
+                    r'^exec\s+(.+?)(?:\s|$)',
+                    r'^(\S+)\s+',
+                ]
+                
+                for pattern in exec_patterns:
+                    match = re.search(pattern, content, re.MULTILINE | re.IGNORECASE)
+                    if match:
+                        cmd = match.group(1).strip().split()[0]
+                        # Remove quotes and variables
+                        cmd = re.sub(r'["\']|^\$|^\$\{|\}', '', cmd)
+                        binary_name = Path(cmd).name.lower()
+                        binary_path = cmd
+                        break
+                
+                if not binary_name:
+                    continue
+                
+                # Check if this matches a known daemon
+                daemon = daemon_binaries.get(binary_name)
+                if not daemon:
+                    # Try to match by service name
+                    daemon = daemon_binaries.get(service_name.lower())
+                
+                # Extract user/group
+                user = "root"
+                group = "root"
+                runs_as_root = True
+                
+                user_match = re.search(r'User\s*=\s*(\S+)', content, re.IGNORECASE)
+                if user_match:
+                    user = user_match.group(1).strip()
+                    runs_as_root = (user.lower() == "root")
+                else:
+                    # Check for su/sudo patterns
+                    su_match = re.search(r'su\s+-?\s*(\S+)', content, re.IGNORECASE)
+                    if su_match:
+                        user = su_match.group(1).strip()
+                        runs_as_root = (user.lower() == "root")
+                
+                group_match = re.search(r'Group\s*=\s*(\S+)', content, re.IGNORECASE)
+                if group_match:
+                    group = group_match.group(1).strip()
+                
+                # Extract capabilities
+                capabilities = []
+                cap_match = re.search(r'CapabilityBoundingSet\s*=\s*(.+)', content, re.IGNORECASE)
+                if cap_match:
+                    caps_str = cap_match.group(1).strip()
+                    capabilities = [c.strip() for c in re.split(r'[\s,]+', caps_str) if c.strip()]
+                else:
+                    # Check for setcap in scripts
+                    setcap_match = re.search(r'setcap\s+([^\s]+)', content, re.IGNORECASE)
+                    if setcap_match:
+                        capabilities = [setcap_match.group(1).strip()]
+                
+                # Check for chroot
+                chroot_jail = None
+                chroot_match = re.search(r'chroot\s+(\S+)', content, re.IGNORECASE)
+                if chroot_match:
+                    chroot_jail = chroot_match.group(1).strip()
+                
+                # Check for namespace isolation
+                namespace_isolation = bool(re.search(
+                    r'PrivateTmp|PrivateDevices|ProtectSystem|ProtectHome|ReadWritePaths',
+                    content, re.IGNORECASE
+                ))
+                
+                # Check for cgroup restrictions
+                cgroup_restrictions = bool(re.search(
+                    r'MemoryLimit|CPUQuota|IOWeight|DevicePolicy',
+                    content, re.IGNORECASE
+                ))
+                
+                # Assess risk
+                risk_level = "LOW"
+                issues = []
+                
+                if runs_as_root:
+                    risk_level = "HIGH"
+                    issues.append(f"Service runs as root user")
+                elif user == "root":
+                    risk_level = "MEDIUM"
+                
+                if not capabilities and runs_as_root:
+                    issues.append("No capability restrictions - full root privileges")
+                
+                if not chroot_jail and not namespace_isolation:
+                    issues.append("No filesystem isolation")
+                
+                if not cgroup_restrictions:
+                    issues.append("No resource limits configured")
+                
+                privilege_info.append(ServicePrivilegeInfo(
+                    service_name=service_name,
+                    binary_path=binary_path or binary_name,
+                    runs_as_root=runs_as_root,
+                    user=user,
+                    group=group,
+                    has_capabilities=len(capabilities) > 0,
+                    capabilities=capabilities,
+                    chroot_jail=chroot_jail,
+                    namespace_isolation=namespace_isolation,
+                    cgroup_restrictions=cgroup_restrictions,
+                    risk_level=risk_level,
+                    issues=issues,
+                    recommendation="Run service as non-root user with minimal capabilities" if runs_as_root else "Consider adding namespace isolation"
+                ))
+        
+        return privilege_info
+
+    def detect_kernel_hardening(self) -> KernelHardeningInfo:
+        """Detect kernel security hardening features from config.
+        
+        Checks for:
+        - KASLR, SMEP, SMAP, PXN
+        - Stack protector, FORTIFY_SOURCE
+        - Usercopy protection, read-only data
+        
+        Returns:
+            KernelHardeningInfo with hardening status
+        """
+        hardening_info = KernelHardeningInfo()
+        
+        # Look for kernel config
+        config_paths = [
+            "proc/config.gz",  # Runtime config
+            "boot/config", "boot/config-*",
+            "usr/src/linux/.config", "lib/modules/*/config",
+        ]
+        
+        config_content = None
+        config_source = None
+        
+        for config_pattern in config_paths:
+            if "*" in config_pattern:
+                # Try glob pattern
+                for path in self.target.glob(config_pattern):
+                    if path.is_file():
+                        config_content = safe_read_file(path, max_size=2 * 1024 * 1024)
+                        if config_content:
+                            config_source = str(path.relative_to(self.target))
+                            break
+            else:
+                full_path = self.target / config_pattern
+                if full_path.exists() and full_path.is_file():
+                    config_content = safe_read_file(full_path, max_size=2 * 1024 * 1024)
+                    if config_content:
+                        config_source = config_pattern
+                        break
+        
+        if not config_content:
+            hardening_info.config_available = False
+            hardening_info.issues.append("Kernel config not found - cannot assess hardening")
+            hardening_info.recommendation = "Provide kernel config.gz for hardening analysis"
+            return hardening_info
+        
+        hardening_info.config_available = True
+        hardening_info.config_source = config_source
+        
+        # Parse config (simplified - looks for CONFIG_* = y)
+        config_lines = config_content.split('\n')
+        config_dict = {}
+        for line in config_lines:
+            line = line.strip()
+            if line.startswith('#') or not line:
+                continue
+            if '=' in line:
+                key, value = line.split('=', 1)
+                config_dict[key.strip()] = value.strip()
+        
+        # Check hardening features
+        hardening_info.kaslr_enabled = (
+            config_dict.get('CONFIG_RANDOMIZE_BASE') == 'y' or
+            config_dict.get('CONFIG_RANDOMIZE_MEMORY') == 'y'
+        )
+        
+        hardening_info.smep_enabled = config_dict.get('CONFIG_X86_SMEP') == 'y'
+        hardening_info.smap_enabled = config_dict.get('CONFIG_X86_SMAP') == 'y'
+        hardening_info.pxn_enabled = config_dict.get('CONFIG_ARM_KERNMEM_PERMS') == 'y'
+        
+        hardening_info.stack_protector = (
+            config_dict.get('CONFIG_STACKPROTECTOR') == 'y' or
+            config_dict.get('CONFIG_STACKPROTECTOR_STRONG') == 'y'
+        )
+        
+        hardening_info.fortify_source = config_dict.get('CONFIG_FORTIFY_SOURCE') == 'y'
+        
+        hardening_info.usercopy_protection = (
+            config_dict.get('CONFIG_HARDENED_USERCOPY') == 'y' or
+            config_dict.get('CONFIG_HARDENED_USERCOPY_FALLBACK') == 'y'
+        )
+        
+        hardening_info.rodata_enforced = config_dict.get('CONFIG_DEBUG_RODATA') == 'y'
+        
+        hardening_info.dmesg_restricted = config_dict.get('CONFIG_SECURITY_DMESG_RESTRICT') == 'y'
+        
+        # Calculate hardening score
+        score = 0
+        if hardening_info.kaslr_enabled:
+            score += 15
+        if hardening_info.smep_enabled or hardening_info.pxn_enabled:
+            score += 10
+        if hardening_info.smap_enabled:
+            score += 10
+        if hardening_info.stack_protector:
+            score += 10
+        if hardening_info.fortify_source:
+            score += 10
+        if hardening_info.usercopy_protection:
+            score += 10
+        if hardening_info.rodata_enforced:
+            score += 10
+        if hardening_info.dmesg_restricted:
+            score += 5
+        
+        hardening_info.hardening_score = score
+        
+        # Generate issues and recommendations
+        if not hardening_info.kaslr_enabled:
+            hardening_info.issues.append("KASLR not enabled - memory layout predictable")
+            hardening_info.recommendations.append("Enable CONFIG_RANDOMIZE_BASE")
+        
+        if not hardening_info.stack_protector:
+            hardening_info.issues.append("Stack protector disabled")
+            hardening_info.recommendations.append("Enable CONFIG_STACKPROTECTOR_STRONG")
+        
+        if not hardening_info.fortify_source:
+            hardening_info.issues.append("FORTIFY_SOURCE not enabled")
+            hardening_info.recommendations.append("Enable CONFIG_FORTIFY_SOURCE")
+        
+        if score < 50:
+            hardening_info.recommendations.append("Overall kernel hardening is weak - enable more security features")
+        
+        return hardening_info
+
+    def detect_update_mechanism(self, binaries: List[BinaryAnalysis]) -> UpdateMechanismInfo:
+        """Detect firmware update mechanism and assess security.
+        
+        Analyzes:
+        - Update system type (SWUpdate, RAUC, Mender, etc.)
+        - Update binary and configuration
+        - Transport security (HTTPS)
+        - Signing and rollback protection
+        
+        Args:
+            binaries: List of analyzed binaries
+            
+        Returns:
+            UpdateMechanismInfo with update mechanism details
+        """
+        update_info = UpdateMechanismInfo()
+        
+        # Find update binaries
+        update_binaries = []
+        for binary in binaries:
+            filename_lower = binary.filename.lower()
+            for system, patterns in UPDATE_SYSTEM_PATTERNS.items():
+                for pattern in patterns:
+                    if pattern.lower() in filename_lower:
+                        update_binaries.append((system, str(binary.path)))
+                        update_info.update_system = system
+                        update_info.update_binary = str(binary.path)
+                        break
+        
+        # Search for update configs
+        update_config_paths = [
+            "etc/swupdate/swupdate.conf",
+            "etc/rauc/system.conf",
+            "etc/mender/mender.conf",
+            "etc/firmware-update.conf",
+            "etc/ota.conf",
+        ]
+        
+        for config_path in update_config_paths:
+            full_path = self.target / config_path
+            if full_path.exists():
+                update_info.update_config = config_path
+                content = safe_read_file(full_path)
+                if content:
+                    # Check for HTTPS
+                    if re.search(r'https://', content, re.IGNORECASE):
+                        update_info.uses_https = True
+                    elif re.search(r'http://', content, re.IGNORECASE):
+                        update_info.issues.append("Update uses HTTP instead of HTTPS")
+                    
+                    # Check for signing
+                    if re.search(r'sign|signature|cert', content, re.IGNORECASE):
+                        update_info.uses_signing = True
+                    else:
+                        update_info.issues.append("Update mechanism does not use signing")
+                    
+                    # Check for rollback protection
+                    if re.search(r'rollback|version.*check|minimum.*version', content, re.IGNORECASE):
+                        update_info.has_rollback_protection = True
+                    else:
+                        update_info.issues.append("No rollback protection detected")
+                    
+                    # Extract update server
+                    server_match = re.search(r'url\s*[=:]\s*([^\s]+)', content, re.IGNORECASE)
+                    if server_match:
+                        update_info.update_server = server_match.group(1).strip()
+        
+        # Assess risk
+        if not update_info.update_system or update_info.update_system == "Unknown":
+            update_info.risk_level = "MEDIUM"
+            update_info.issues.append("Update mechanism not clearly identified")
+        elif not update_info.uses_https:
+            update_info.risk_level = "HIGH"
+            update_info.recommendation = "Use HTTPS for firmware updates"
+        elif not update_info.uses_signing:
+            update_info.risk_level = "HIGH"
+            update_info.recommendation = "Implement firmware signing for updates"
+        elif not update_info.has_rollback_protection:
+            update_info.risk_level = "MEDIUM"
+            update_info.recommendation = "Add rollback protection to prevent downgrade attacks"
+        else:
+            update_info.risk_level = "LOW"
+            update_info.recommendation = "Update mechanism appears secure"
+        
+        return update_info
+
     def generate_aslr_summary(self, binaries: List[BinaryAnalysis]) -> Dict:
         """Generate summary of ASLR analysis across all binaries."""
         summary = {
@@ -3262,67 +4194,72 @@ class HardenCheck:
         """Execute complete security scan."""
         start_time = datetime.now()
 
-        print(BANNER)
-        print(f"  Target:  {self.target}")
-        print(f"  Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print("=" * 55)
-        print()
+        if not self.quiet:
+            print(BANNER)
+            print(f"  Target:  {self.target}")
+            print(f"  Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print("=" * 55)
+            print()
 
-        print("[*] Tools detected:")
-        for name, cmd in self.tools.items():
-            print(f"    + {name}: {cmd}")
-        missing = {"rabin2", "hardening-check", "scanelf", "readelf", "file", "strings"} - set(self.tools.keys())
-        if missing:
-            print(f"    - Missing: {', '.join(missing)}")
-        print()
+            print("[*] Tools detected:")
+            for name, cmd in self.tools.items():
+                print(f"    + {name}: {cmd}")
+            missing = {"rabin2", "hardening-check", "scanelf", "readelf", "file", "strings"} - set(self.tools.keys())
+            if missing:
+                print(f"    - Missing: {', '.join(missing)}")
+            print()
 
-        print("[1/10] Discovering files...")
+            print("[1/10] Discovering files...")
         binaries_raw, sources, configs = self.find_files()
-        print(f"      ELF binaries: {len(binaries_raw)}")
-        print(f"      Source files: {len(sources)}")
-        print(f"      Config files: {len(configs)}")
-        print()
+        if not self.quiet:
+            print(f"      ELF binaries: {len(binaries_raw)}")
+            print(f"      Source files: {len(sources)}")
+            print(f"      Config files: {len(configs)}")
+            print()
 
-        print("[2/10] Analyzing firmware profile...")
+        if not self.quiet:
+            print("[2/10] Analyzing firmware profile...")
         profile = self.detect_firmware_profile(binaries_raw)
-        print(f"      Type: {profile.fw_type}")
-        arch_str = profile.arch
-        if profile.bits != "Unknown":
-            arch_str += f" {profile.bits}-bit"
-        if profile.endian != "Unknown":
-            arch_str += f" {profile.endian}"
-        print(f"      Arch: {arch_str}")
-        print(f"      Libc: {profile.libc}")
-        if profile.kernel != "Unknown":
-            print(f"      Kernel: {profile.kernel}")
-        if profile.filesystem != "Unknown":
-            print(f"      Filesystem: {profile.filesystem}")
-        if profile.compression != "Unknown":
-            print(f"      Compression: {profile.compression}")
-        if profile.bootloader != "Unknown":
-            print(f"      Bootloader: {profile.bootloader}")
-        if profile.init_system != "Unknown":
-            print(f"      Init System: {profile.init_system}")
-        if profile.package_manager not in ("Unknown", "None (static firmware)"):
-            print(f"      Package Mgr: {profile.package_manager}")
-        if profile.ssl_library != "Unknown":
-            print(f"      SSL/TLS: {profile.ssl_library}")
-        if profile.web_server != "None":
-            print(f"      Web Server: {profile.web_server}")
-        if profile.ssh_server != "None":
-            print(f"      SSH Server: {profile.ssh_server}")
-        print(f"      Total Size: {profile.total_size_mb} MB | Files: {profile.total_files} | Symlinks: {profile.symlinks}")
-        if profile.busybox_applets > 0:
-            print(f"      BusyBox: {profile.busybox_applets} applets")
-        if profile.kernel_modules > 0:
-            print(f"      Kernel Modules: {profile.kernel_modules}")
-        if profile.setuid_files:
-            print(f"      Setuid: {len(profile.setuid_files)} files")
-        if profile.setgid_files:
-            print(f"      Setgid: {len(profile.setgid_files)} files")
-        print()
+        if not self.quiet:
+            print(f"      Type: {profile.fw_type}")
+            arch_str = profile.arch
+            if profile.bits != "Unknown":
+                arch_str += f" {profile.bits}-bit"
+            if profile.endian != "Unknown":
+                arch_str += f" {profile.endian}"
+            print(f"      Arch: {arch_str}")
+            print(f"      Libc: {profile.libc}")
+            if profile.kernel != "Unknown":
+                print(f"      Kernel: {profile.kernel}")
+            if profile.filesystem != "Unknown":
+                print(f"      Filesystem: {profile.filesystem}")
+            if profile.compression != "Unknown":
+                print(f"      Compression: {profile.compression}")
+            if profile.bootloader != "Unknown":
+                print(f"      Bootloader: {profile.bootloader}")
+            if profile.init_system != "Unknown":
+                print(f"      Init System: {profile.init_system}")
+            if profile.package_manager not in ("Unknown", "None (static firmware)"):
+                print(f"      Package Mgr: {profile.package_manager}")
+            if profile.ssl_library != "Unknown":
+                print(f"      SSL/TLS: {profile.ssl_library}")
+            if profile.web_server != "None":
+                print(f"      Web Server: {profile.web_server}")
+            if profile.ssh_server != "None":
+                print(f"      SSH Server: {profile.ssh_server}")
+            print(f"      Total Size: {profile.total_size_mb} MB | Files: {profile.total_files} | Symlinks: {profile.symlinks}")
+            if profile.busybox_applets > 0:
+                print(f"      BusyBox: {profile.busybox_applets} applets")
+            if profile.kernel_modules > 0:
+                print(f"      Kernel Modules: {profile.kernel_modules}")
+            if profile.setuid_files:
+                print(f"      Setuid: {len(profile.setuid_files)} files")
+            if profile.setgid_files:
+                print(f"      Setgid: {len(profile.setgid_files)} files")
+            print()
 
-        print("[3/10] Analyzing binary hardening + ASLR entropy...")
+        if not self.quiet:
+            print("[3/10] Analyzing binary hardening + ASLR entropy...")
         analyzed_binaries = []
         
         BATCH_SIZE = 50
@@ -3344,80 +4281,195 @@ class HardenCheck:
                     except Exception as e:
                         self._log(f"Analysis error: {e}")
             
-            if total_binaries > 100:
+            if total_binaries > 100 and not self.quiet:
                 print(f"      Progress: {len(analyzed_binaries)}/{total_binaries}")
 
         secured = sum(1 for b in analyzed_binaries if classify_binary(b) == "SECURED")
         partial = sum(1 for b in analyzed_binaries if classify_binary(b) == "PARTIAL")
         insecure = sum(1 for b in analyzed_binaries if classify_binary(b) == "INSECURE")
-        print(f"      Analyzed: {len(analyzed_binaries)}")
-        print(f"      Secured: {secured}, Partial: {partial}, Insecure: {insecure}")
-        
-        aslr_count = sum(1 for b in analyzed_binaries if b.aslr_analysis and b.aslr_analysis.is_pie)
-        print(f"      PIE binaries with ASLR analysis: {aslr_count}")
-        print()
+        if not self.quiet:
+            print(f"      Analyzed: {len(analyzed_binaries)}")
+            print(f"      Secured: {secured}, Partial: {partial}, Insecure: {insecure}")
+            aslr_count = sum(1 for b in analyzed_binaries if b.aslr_analysis and b.aslr_analysis.is_pie)
+            print(f"      PIE binaries with ASLR analysis: {aslr_count}")
+            print()
 
-        print("[4/10] Detecting network services/daemons...")
+            print("[4/10] Detecting network services/daemons...")
         daemons = self.detect_daemons(analyzed_binaries)
-        if daemons:
-            for daemon in daemons[:5]:
-                ver_str = f" v{daemon.version}" if daemon.version != "Unknown" else ""
-                print(f"      [{daemon.risk}] {daemon.name} ({daemon.binary}{ver_str})")
-            if len(daemons) > 5:
-                print(f"      ... and {len(daemons) - 5} more")
-        else:
-            print("      No daemons detected")
-        print()
+        if not self.quiet:
+            if daemons:
+                for daemon in daemons[:5]:
+                    ver_str = f" v{daemon.version}" if daemon.version != "Unknown" else ""
+                    print(f"      [{daemon.risk}] {daemon.name} ({daemon.binary}{ver_str})")
+                if len(daemons) > 5:
+                    print(f"      ... and {len(daemons) - 5} more")
+            else:
+                print("      No daemons detected")
+            print()
 
-        print("[5/10] Analyzing dependency chain...")
+            print("[5/10] Analyzing dependency chain...")
         dep_risks = self.analyze_dependencies(analyzed_binaries)
-        if dep_risks:
-            for risk in dep_risks[:3]:
-                print(f"      {risk.library}: {risk.issue}")
-            if len(dep_risks) > 3:
-                print(f"      ... and {len(dep_risks) - 3} more")
-        else:
-            print("      No insecure dependencies")
-        print()
+        if not self.quiet:
+            if dep_risks:
+                for risk in dep_risks[:3]:
+                    print(f"      {risk.library}: {risk.issue}")
+                if len(dep_risks) > 3:
+                    print(f"      ... and {len(dep_risks) - 3} more")
+            else:
+                print("      No insecure dependencies")
+            print()
 
-        print("[6/10] Scanning for banned functions...")
+            print("[6/10] Scanning for banned functions...")
         banned_binary = self.scan_banned_functions_binary(analyzed_binaries)
         banned_source = self.scan_banned_functions_source(sources)
         banned_all = banned_binary + banned_source
-        print(f"      Found: {len(banned_all)} ({len(banned_binary)} binary, {len(banned_source)} source)")
-        print()
+        if not self.quiet:
+            print(f"      Found: {len(banned_all)} ({len(banned_binary)} binary, {len(banned_source)} source)")
+            print()
 
-        print("[7/10] Scanning for credentials and certificates...")
+            print("[7/10] Scanning for credentials and certificates...")
         credentials = self.scan_credentials(configs, sources)
         certificates = self.scan_certificates()
-        print(f"      Credentials: {len(credentials)} findings")
-        print(f"      Certificates: {len(certificates)} files")
-        print()
+        if not self.quiet:
+            print(f"      Credentials: {len(credentials)} findings")
+            print(f"      Certificates: {len(certificates)} files")
+            print()
 
-        print("[8/10] Scanning configuration files...")
+            print("[8/10] Scanning configuration files...")
         config_issues = self.scan_configurations(configs)
-        print(f"      Config issues: {len(config_issues)}")
-        print()
+        if not self.quiet:
+            print(f"      Config issues: {len(config_issues)}")
+            print()
 
-        print("[9/10] Generating ASLR entropy summary...")
+            print("[9/10] Generating ASLR entropy summary...")
         aslr_summary = self.generate_aslr_summary(analyzed_binaries)
-        if aslr_summary["analyzed"] > 0:
-            print(f"      Average effective entropy: {aslr_summary['avg_effective_entropy']:.1f} bits")
-            print(f"      Ratings: Excellent={aslr_summary['by_rating']['excellent']}, "
-                  f"Good={aslr_summary['by_rating']['good']}, "
-                  f"Weak={aslr_summary['by_rating']['weak']}, "
-                  f"Ineffective={aslr_summary['by_rating']['ineffective']}")
-        print()
+        if not self.quiet:
+            if aslr_summary["analyzed"] > 0:
+                print(f"      Average effective entropy: {aslr_summary['avg_effective_entropy']:.1f} bits")
+                print(f"      Ratings: Excellent={aslr_summary['by_rating']['excellent']}, "
+                      f"Good={aslr_summary['by_rating']['good']}, "
+                      f"Weak={aslr_summary['by_rating']['weak']}, "
+                      f"Ineffective={aslr_summary['by_rating']['ineffective']}")
+            print()
 
-        print("[10/10] Generating SBOM (Software Bill of Materials)...")
+            print("[10/10] Generating SBOM (Software Bill of Materials)...")
         sbom = self.generate_sbom(analyzed_binaries, profile)
-        print(f"      Components: {sbom.total_components} ({sbom.total_applications} apps, {sbom.total_libraries} libs)")
-        print(f"      With version: {sbom.components_with_version}/{sbom.total_components}")
-        print(f"      With CPE:     {sbom.components_with_cpe}/{sbom.total_components}")
-        print(f"      Dependency links: {len(sbom.dependency_tree)}")
-        if sbom.package_manager_source:
-            print(f"      Package source: {sbom.package_manager_source}")
-        print()
+        if not self.quiet:
+            print(f"      Components: {sbom.total_components} ({sbom.total_applications} apps, {sbom.total_libraries} libs)")
+            print(f"      With version: {sbom.components_with_version}/{sbom.total_components}")
+            print(f"      With CPE:     {sbom.components_with_cpe}/{sbom.total_components}")
+            print(f"      Dependency links: {len(sbom.dependency_tree)}")
+            if sbom.package_manager_source:
+                print(f"      Package source: {sbom.package_manager_source}")
+            print()
+
+            print("[11/15] Detecting cryptographic binaries...")
+        crypto_binaries = self.detect_cryptographic_binaries(analyzed_binaries)
+        if not self.quiet:
+            if crypto_binaries:
+                print(f"      Found: {len(crypto_binaries)} cryptographic utilities")
+                for cb in crypto_binaries[:5]:
+                    risk_icon = "🔴" if cb.risk_level == "HIGH" else "🟡" if cb.risk_level == "MEDIUM" else "🟢"
+                    print(f"        {risk_icon} [{cb.risk_level}] {cb.name} ({cb.purpose})")
+                if len(crypto_binaries) > 5:
+                    print(f"        ... and {len(crypto_binaries) - 5} more")
+            else:
+                print("      No cryptographic binaries detected")
+            print()
+
+            print("[12/15] Analyzing firmware signing & secure boot...")
+        firmware_signing = self.detect_firmware_signing()
+        if not self.quiet:
+            if firmware_signing.is_signed:
+                print(f"      Signed: Yes ({firmware_signing.signing_method})")
+                print(f"      Secure Boot: {'Enabled' if firmware_signing.secure_boot_enabled else 'Disabled'}")
+                if firmware_signing.signature_files:
+                    print(f"      Signature files: {len(firmware_signing.signature_files)}")
+            else:
+                print("      Signed: No")
+                print("      ⚠️  Firmware is not signed")
+            if firmware_signing.issues:
+                for issue in firmware_signing.issues[:3]:
+                    print(f"        - {issue}")
+            print()
+
+            print("[13/15] Analyzing service privileges...")
+        service_privileges = self.detect_service_privileges(analyzed_binaries, daemons)
+        if not self.quiet:
+            if service_privileges:
+                root_services = [s for s in service_privileges if s.runs_as_root]
+                print(f"      Services analyzed: {len(service_privileges)}")
+                print(f"      Running as root: {len(root_services)}")
+                if root_services:
+                    print(f"      ⚠️  High-risk root services:")
+                    for svc in root_services[:5]:
+                        print(f"        - {svc.service_name} ({svc.binary_path})")
+                isolated = sum(1 for s in service_privileges if s.namespace_isolation or s.chroot_jail)
+                print(f"      With isolation: {isolated}")
+            else:
+                print("      No service configurations found")
+            print()
+
+            print("[14/15] Analyzing kernel hardening...")
+        kernel_hardening = self.detect_kernel_hardening()
+        if not self.quiet:
+            if kernel_hardening.config_available:
+                print(f"      Config source: {kernel_hardening.config_source}")
+                print(f"      Hardening score: {kernel_hardening.hardening_score}/100")
+                features = []
+                if kernel_hardening.kaslr_enabled:
+                    features.append("KASLR")
+                if kernel_hardening.smep_enabled or kernel_hardening.pxn_enabled:
+                    features.append("SMEP/PXN")
+                if kernel_hardening.smap_enabled:
+                    features.append("SMAP")
+                if kernel_hardening.stack_protector:
+                    features.append("Stack Protector")
+                if kernel_hardening.fortify_source:
+                    features.append("FORTIFY_SOURCE")
+                print(f"      Enabled features: {', '.join(features) if features else 'None'}")
+                if kernel_hardening.issues:
+                    print(f"      Issues: {len(kernel_hardening.issues)}")
+            else:
+                print("      Kernel config not found")
+            print()
+
+            print("[15/15] Analyzing update mechanism...")
+        update_mechanism = self.detect_update_mechanism(analyzed_binaries)
+        if not self.quiet:
+            if update_mechanism.update_system != "Unknown":
+                print(f"      Update system: {update_mechanism.update_system}")
+                print(f"      HTTPS: {'Yes' if update_mechanism.uses_https else 'No'}")
+                print(f"      Signed: {'Yes' if update_mechanism.uses_signing else 'No'}")
+                print(f"      Rollback protection: {'Yes' if update_mechanism.has_rollback_protection else 'No'}")
+                if update_mechanism.issues:
+                    risk_icon = "🔴" if update_mechanism.risk_level == "HIGH" else "🟡"
+                    print(f"      {risk_icon} Risk level: {update_mechanism.risk_level}")
+                    for issue in update_mechanism.issues[:3]:
+                        print(f"        - {issue}")
+            else:
+                print("      Update mechanism not detected")
+            print()
+
+            print("[16/16] Running security tests...")
+        # Run security testing (after SBOM is generated for CVE checks)
+        security_tests = []
+        weak_crypto_findings = self.test_weak_crypto(configs, analyzed_binaries)
+        security_tests.extend(weak_crypto_findings)
+        cve_findings = self.test_cve_vulnerabilities(sbom)
+        security_tests.extend(cve_findings)
+        default_creds_findings = self.test_default_credentials(configs, daemons)
+        security_tests.extend(default_creds_findings)
+        if not self.quiet:
+            print(f"      Security test findings: {len(security_tests)}")
+            if security_tests:
+                weak_crypto_count = sum(1 for f in security_tests if f.test_type == "weak_crypto")
+                cve_count = sum(1 for f in security_tests if f.test_type == "cve")
+                creds_count = sum(1 for f in security_tests if f.test_type == "default_creds")
+                print(f"        - Weak crypto: {weak_crypto_count}")
+                print(f"        - CVE checks: {cve_count}")
+                print(f"        - Default credentials: {creds_count}")
+            print()
 
         duration = (datetime.now() - start_time).total_seconds()
         
@@ -3425,7 +4477,8 @@ class HardenCheck:
         missing_tools = list(all_tools - set(self.tools.keys()))
 
         grade, score = calculate_grade(analyzed_binaries)
-        print(f"""{'=' * 65}
+        if not self.quiet:
+            print(f"""{'=' * 65}
   SCAN COMPLETE
 {'=' * 65}
   Grade: {grade} (Score: {score}/110)
@@ -3438,6 +4491,12 @@ class HardenCheck:
   Credentials:  {len(credentials)} findings
   Certificates: {len(certificates)} files
   Config Issues:{len(config_issues)} findings
+  Crypto Binaries:{len(crypto_binaries)} detected
+  Firmware Signing:{'Yes' if firmware_signing.is_signed else 'No'} | Secure Boot:{'Yes' if firmware_signing.secure_boot_enabled else 'No'}
+  Service Privileges:{len(service_privileges)} analyzed ({sum(1 for s in service_privileges if s.runs_as_root)} as root)
+  Kernel Hardening:{kernel_hardening.hardening_score}/100
+  Update Mechanism:{update_mechanism.update_system} ({update_mechanism.risk_level} risk)
+  Security Tests:{len(security_tests)} findings
   SBOM:         {sbom.total_components} components ({sbom.components_with_cpe} with CPE)
   
   Duration: {duration:.1f}s
@@ -3457,6 +4516,12 @@ class HardenCheck:
             credentials=credentials,
             certificates=certificates,
             config_issues=config_issues,
+            security_tests=security_tests,
+            crypto_binaries=crypto_binaries,
+            firmware_signing=firmware_signing,
+            service_privileges=service_privileges,
+            kernel_hardening=kernel_hardening,
+            update_mechanism=update_mechanism,
             aslr_summary=aslr_summary,
             missing_tools=missing_tools,
             sbom=sbom
@@ -3578,6 +4643,103 @@ def calculate_grade(binaries: List[BinaryAnalysis]) -> Tuple[str, int]:
     else:
         return "F", int(average)
 
+
+
+def generate_text_summary(result: ScanResult, output_path: Path):
+    """Generate a plain-text summary of binary hardening results.
+
+    This is intended for quick human/CI consumption without HTML/JSON.
+    """
+    lines = []
+    grade, score = calculate_grade(result.binaries)
+
+    header = (
+        f"HardenCheck Summary\n"
+        f"Target: {result.target}\n"
+        f"Grade: {grade} ({score})\n"
+        f"Total binaries: {len(result.binaries)}\n"
+        f"Generated: {result.scan_time}\n"
+        f"\n"
+        f"{'TYPE':<12} {'CLASS':<10} {'ASLR':<12} {'NX':<3} {'CAN':<3} "
+        f"{'PIE':<3} {'RELRO':<6} {'FORT':<4} {'STRIP':<5} PATH\n"
+        f"{'-'*90}"
+    )
+    lines.append(header)
+
+    for b in sorted(result.binaries, key=lambda x: x.path):
+        classification = classify_binary(b)
+        aslr_rating = b.aslr_analysis.rating.value if b.aslr_analysis else "N/A"
+
+        def flag(v):
+            if v is True:
+                return "Y"
+            if v is False:
+                return "N"
+            return "-"
+
+        line = (
+            f"{b.binary_type.value:<12} "
+            f"{classification:<10} "
+            f"{aslr_rating:<12} "
+            f"{flag(b.nx):<3} "
+            f"{flag(b.canary):<3} "
+            f"{flag(b.pie):<3} "
+            f"{(b.relro or '-'):6.6} "
+            f"{flag(b.fortify):<4} "
+            f"{flag(b.stripped):<5} "
+            f"{b.path}"
+        )
+        lines.append(line)
+
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def generate_csv_summary(result: ScanResult, output_path: Path):
+    """Generate a CSV summary of binary hardening results for CI tooling."""
+    import csv
+
+    with output_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "path",
+            "filename",
+            "type",
+            "classification",
+            "aslr_rating",
+            "nx",
+            "canary",
+            "pie",
+            "relro",
+            "fortify",
+            "stripped",
+            "stack_clash",
+            "cfi",
+            "textrel",
+            "rpath",
+            "confidence",
+        ])
+
+        for b in sorted(result.binaries, key=lambda x: x.path):
+            classification = classify_binary(b)
+            aslr_rating = b.aslr_analysis.rating.value if b.aslr_analysis else "N/A"
+            writer.writerow([
+                str(b.path),
+                b.filename,
+                b.binary_type.value,
+                classification,
+                aslr_rating,
+                b.nx,
+                b.canary,
+                b.pie,
+                b.relro,
+                b.fortify,
+                b.stripped,
+                b.stack_clash,
+                b.cfi,
+                b.textrel,
+                b.rpath,
+                b.confidence,
+            ])
 
 
 def esc(value) -> str:
@@ -4164,6 +5326,90 @@ def generate_json_report(result: ScanResult, output_path: Path):
             {"file": c.file, "line": c.line, "issue": c.issue, "severity": c.severity.name}
             for c in result.config_issues
         ],
+        "security_tests": [
+            {
+                "test_type": t.test_type,
+                "component": t.component,
+                "version": t.version,
+                "issue": t.issue,
+                "severity": t.severity.name,
+                "details": t.details,
+                "recommendation": t.recommendation,
+                "cve_id": t.cve_id,
+                "affected_path": t.affected_path
+            }
+            for t in result.security_tests
+        ],
+        "crypto_binaries": [
+            {
+                "name": cb.name,
+                "path": cb.path,
+                "type": cb.binary_type.value,
+                "version": cb.version,
+                "purpose": cb.purpose,
+                "has_network": cb.has_network,
+                "risk_level": cb.risk_level,
+                "security_flags": cb.security_flags,
+                "issues": cb.issues,
+                "recommendation": cb.recommendation
+            }
+            for cb in result.crypto_binaries
+        ],
+        "firmware_signing": {
+            "is_signed": result.firmware_signing.is_signed if result.firmware_signing else False,
+            "signing_method": result.firmware_signing.signing_method if result.firmware_signing else "Unknown",
+            "secure_boot_enabled": result.firmware_signing.secure_boot_enabled if result.firmware_signing else False,
+            "signature_files": result.firmware_signing.signature_files if result.firmware_signing else [],
+            "bootloader_config": result.firmware_signing.bootloader_config if result.firmware_signing else {},
+            "issues": result.firmware_signing.issues if result.firmware_signing else [],
+            "recommendation": result.firmware_signing.recommendation if result.firmware_signing else ""
+        } if result.firmware_signing else {},
+        "service_privileges": [
+            {
+                "service_name": sp.service_name,
+                "binary_path": sp.binary_path,
+                "runs_as_root": sp.runs_as_root,
+                "user": sp.user,
+                "group": sp.group,
+                "has_capabilities": sp.has_capabilities,
+                "capabilities": sp.capabilities,
+                "chroot_jail": sp.chroot_jail,
+                "namespace_isolation": sp.namespace_isolation,
+                "cgroup_restrictions": sp.cgroup_restrictions,
+                "risk_level": sp.risk_level,
+                "issues": sp.issues,
+                "recommendation": sp.recommendation
+            }
+            for sp in result.service_privileges
+        ],
+        "kernel_hardening": {
+            "config_available": result.kernel_hardening.config_available if result.kernel_hardening else False,
+            "config_source": result.kernel_hardening.config_source if result.kernel_hardening else "",
+            "kaslr_enabled": result.kernel_hardening.kaslr_enabled if result.kernel_hardening else False,
+            "smep_enabled": result.kernel_hardening.smep_enabled if result.kernel_hardening else False,
+            "smap_enabled": result.kernel_hardening.smap_enabled if result.kernel_hardening else False,
+            "pxn_enabled": result.kernel_hardening.pxn_enabled if result.kernel_hardening else False,
+            "stack_protector": result.kernel_hardening.stack_protector if result.kernel_hardening else False,
+            "fortify_source": result.kernel_hardening.fortify_source if result.kernel_hardening else False,
+            "usercopy_protection": result.kernel_hardening.usercopy_protection if result.kernel_hardening else False,
+            "rodata_enforced": result.kernel_hardening.rodata_enforced if result.kernel_hardening else False,
+            "dmesg_restricted": result.kernel_hardening.dmesg_restricted if result.kernel_hardening else False,
+            "hardening_score": result.kernel_hardening.hardening_score if result.kernel_hardening else 0,
+            "issues": result.kernel_hardening.issues if result.kernel_hardening else [],
+            "recommendations": result.kernel_hardening.recommendations if result.kernel_hardening else []
+        } if result.kernel_hardening else {},
+        "update_mechanism": {
+            "update_system": result.update_mechanism.update_system if result.update_mechanism else "Unknown",
+            "update_binary": result.update_mechanism.update_binary if result.update_mechanism else None,
+            "update_config": result.update_mechanism.update_config if result.update_mechanism else None,
+            "uses_https": result.update_mechanism.uses_https if result.update_mechanism else False,
+            "uses_signing": result.update_mechanism.uses_signing if result.update_mechanism else False,
+            "has_rollback_protection": result.update_mechanism.has_rollback_protection if result.update_mechanism else False,
+            "update_server": result.update_mechanism.update_server if result.update_mechanism else None,
+            "issues": result.update_mechanism.issues if result.update_mechanism else [],
+            "risk_level": result.update_mechanism.risk_level if result.update_mechanism else "Unknown",
+            "recommendation": result.update_mechanism.recommendation if result.update_mechanism else ""
+        } if result.update_mechanism else {},
         "sbom": {
             "total_components": result.sbom.total_components,
             "total_libraries": result.sbom.total_libraries,
@@ -4484,6 +5730,16 @@ Scoring Model:
                         help="Enable extended checks (Stack Clash, CFI) - requires hardening-check tool")
     parser.add_argument("--sbom", choices=["cyclonedx", "spdx", "all"], default=None,
                         help="Generate SBOM: cyclonedx (CycloneDX 1.5), spdx (SPDX 2.3), or all")
+    parser.add_argument("--summary", choices=["text", "csv"], default=None,
+                        help="Generate a plain-text or CSV summary of binary hardening results")
+    parser.add_argument("--fail-on-grade", choices=["A", "B", "C", "D", "F"], metavar="GRADE", default=None,
+                        help="Exit with code 1 if overall grade is below GRADE (e.g. --fail-on-grade B fails for C/D/F). For CI.")
+    parser.add_argument("--include", action="append", metavar="GLOB", default=None,
+                        help="Only scan paths matching GLOB (relative to target). Can be repeated. Example: --include 'bin/*' --include 'usr/sbin/*'")
+    parser.add_argument("--exclude", action="append", metavar="GLOB", default=None,
+                        help="Skip paths matching GLOB (relative to target). Can be repeated. Example: --exclude 'usr/lib/*'")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="Suppress banner and progress output; only print report paths (for CI/scripting)")
     parser.add_argument("--version", action="version",
                         version=f"HardenCheck v{VERSION}")
 
@@ -4498,7 +5754,15 @@ Scoring Model:
         sys.exit(1)
 
     try:
-        scanner = HardenCheck(target, threads=args.threads, verbose=args.verbose, extended=args.extended)
+        scanner = HardenCheck(
+            target,
+            threads=args.threads,
+            verbose=args.verbose,
+            extended=args.extended,
+            include_patterns=args.include,
+            exclude_patterns=args.exclude,
+            quiet=args.quiet,
+        )
         result = scanner.scan()
 
         output_path = Path(args.output)
@@ -4509,6 +5773,18 @@ Scoring Model:
             json_path = output_path.with_suffix(".json")
             generate_json_report(result, json_path)
             print(f"[+] JSON Report: {json_path}")
+
+        # Summary outputs for CI / quick inspection
+        if args.summary:
+            base = output_path.with_suffix("")
+            if args.summary == "text":
+                summary_path = Path(f"{base}_summary.txt")
+                generate_text_summary(result, summary_path)
+                print(f"[+] Text summary: {summary_path}")
+            elif args.summary == "csv":
+                summary_path = Path(f"{base}_summary.csv")
+                generate_csv_summary(result, summary_path)
+                print(f"[+] CSV summary: {summary_path}")
 
         # SBOM generation
         if args.sbom and result.sbom:
