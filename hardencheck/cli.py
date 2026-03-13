@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -61,6 +62,14 @@ Scoring Model:
                         help="Skip paths matching GLOB (relative to target). Can be repeated. Example: --exclude 'usr/lib/*'")
     parser.add_argument("-q", "--quiet", action="store_true",
                         help="Suppress banner and progress output; only print report paths (for CI/scripting)")
+    parser.add_argument("--nvd-api-key", default="",
+                        help="NVD API key for faster CVE lookups (50 req/30s vs 5 req/30s). Also reads NVD_API_KEY env var.")
+    parser.add_argument("--skip-cve-lookup", action="store_true",
+                        help="Skip live CVE correlation (use static checks only)")
+    parser.add_argument("--no-cve-cache", action="store_true",
+                        help="Disable CVE response caching")
+    parser.add_argument("--cve-cache-dir", default=None,
+                        help="Custom CVE cache directory (default: ~/.cache/hardencheck/cve_cache)")
     parser.add_argument("--version", action="version",
                         version=f"HardenCheck v{VERSION}")
 
@@ -75,6 +84,7 @@ Scoring Model:
         sys.exit(1)
 
     try:
+        nvd_key = args.nvd_api_key or os.environ.get("NVD_API_KEY", "")
         scanner = HardenCheck(
             target,
             threads=args.threads,
@@ -83,6 +93,10 @@ Scoring Model:
             include_patterns=args.include,
             exclude_patterns=args.exclude,
             quiet=args.quiet,
+            nvd_api_key=nvd_key,
+            skip_cve_lookup=args.skip_cve_lookup,
+            cve_cache_enabled=not args.no_cve_cache,
+            cve_cache_dir=Path(args.cve_cache_dir) if args.cve_cache_dir else None,
         )
         result = scanner.scan()
 
