@@ -99,9 +99,27 @@ def _aggregate_severities(result: ScanResult) -> Tuple[Dict[str, int], List[Tupl
                 counts[key] += 1
             findings.append((sev.value, sev.name, f"Update mechanism: {issue}"))
 
+    # Crypto binaries
+    risk_map = {"CRITICAL": Severity.CRITICAL, "HIGH": Severity.HIGH, "MEDIUM": Severity.MEDIUM, "LOW": Severity.LOW}
+    for cb in result.crypto_binaries:
+        sev = risk_map.get(cb.risk_level, Severity.MEDIUM)
+        for issue in cb.issues:
+            key = sev.name.lower()
+            if key in counts:
+                counts[key] += 1
+            findings.append((sev.value, sev.name, f"Crypto binary {cb.name}: {issue}"))
+
+    # Service privileges
+    for sp in result.service_privileges:
+        sev = risk_map.get(sp.risk_level, Severity.MEDIUM)
+        for issue in sp.issues:
+            key = sev.name.lower()
+            if key in counts:
+                counts[key] += 1
+            findings.append((sev.value, sev.name, f"Service {sp.service_name}: {issue}"))
+
     # PQC readiness
     if result.pqc_readiness:
-        risk_map = {"CRITICAL": Severity.CRITICAL, "HIGH": Severity.HIGH, "MEDIUM": Severity.MEDIUM, "LOW": Severity.LOW}
         for f in result.pqc_readiness.get("findings", []):
             sev = risk_map.get(f.get("risk_level", "MEDIUM"), Severity.MEDIUM)
             key = sev.name.lower()
@@ -274,6 +292,83 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
             pqc_html += '</ul></div>'
     else:
         pqc_html = '<div class="dm">No quantum-vulnerable cryptographic algorithm usage detected</div>'
+
+    # Crypto binaries section
+    crypto_bin_rows = ""
+    if result.crypto_binaries:
+        for cb in result.crypto_binaries:
+            risk_class = "bad" if cb.risk_level in ("CRITICAL", "HIGH") else "wrn" if cb.risk_level == "MEDIUM" else ""
+            sf = cb.security_flags
+            def sflag(key):
+                val = sf.get(key)
+                if val is True: return '<td class="ok">Y</td>'
+                elif val is False: return '<td class="bad">N</td>'
+                elif val == "full": return '<td class="ok">full</td>'
+                elif val == "partial": return '<td class="wrn">partial</td>'
+                elif val == "none": return '<td class="bad">none</td>'
+                return '<td class="dm">?</td>'
+            issues_str = "; ".join(cb.issues[:2]) if cb.issues else "-"
+            if len(cb.issues) > 2:
+                issues_str += f" (+{len(cb.issues)-2})"
+            crypto_bin_rows += f'<tr><td class="fn">{esc(cb.name)}</td><td>{esc(cb.purpose)}</td>'
+            crypto_bin_rows += f'<td>{esc(cb.version)}</td>'
+            crypto_bin_rows += f'<td>{"Yes" if cb.has_network else "No"}</td>'
+            crypto_bin_rows += sflag("nx") + sflag("pie") + sflag("canary") + sflag("relro")
+            crypto_bin_rows += f'<td class="{risk_class}">{esc(cb.risk_level)}</td>'
+            crypto_bin_rows += f'<td class="loc">{esc(issues_str)}</td></tr>'
+
+    # Service privileges section
+    svc_priv_rows = ""
+    if result.service_privileges:
+        for sp in result.service_privileges:
+            risk_class = "bad" if sp.risk_level in ("CRITICAL", "HIGH") else "wrn" if sp.risk_level == "MEDIUM" else ""
+            root_class = "bad" if sp.runs_as_root else "ok"
+            cap_str = ", ".join(sp.capabilities[:3]) if sp.capabilities else "-"
+            if len(sp.capabilities) > 3:
+                cap_str += f" (+{len(sp.capabilities)-3})"
+            svc_priv_rows += f'<tr><td class="fn">{esc(sp.service_name)}</td>'
+            svc_priv_rows += f'<td class="loc">{esc(sp.binary_path)}</td>'
+            svc_priv_rows += f'<td>{esc(sp.user)}:{esc(sp.group)}</td>'
+            svc_priv_rows += f'<td class="{root_class}">{"Yes" if sp.runs_as_root else "No"}</td>'
+            svc_priv_rows += f'<td class="loc">{esc(cap_str)}</td>'
+            svc_priv_rows += f'<td class="{"ok" if sp.chroot_jail else "dm"}">{"Yes" if sp.chroot_jail else "No"}</td>'
+            svc_priv_rows += f'<td class="{"ok" if sp.namespace_isolation else "dm"}">{"Yes" if sp.namespace_isolation else "No"}</td>'
+            svc_priv_rows += f'<td class="{"ok" if sp.cgroup_restrictions else "dm"}">{"Yes" if sp.cgroup_restrictions else "No"}</td>'
+            svc_priv_rows += f'<td class="{risk_class}">{esc(sp.risk_level)}</td></tr>'
+
+    # Update mechanism section
+    update_html = ""
+    if result.update_mechanism:
+        um = result.update_mechanism
+        risk_class = "bad" if um.risk_level in ("CRITICAL", "HIGH") else "wrn" if um.risk_level == "MEDIUM" else "ok"
+        update_html = f'''<div class="profile">
+<div class="profile-row"><span class="profile-label">Update System</span><span>{esc(um.update_system)}</span></div>
+<div class="profile-row"><span class="profile-label">Update Binary</span><span>{esc(um.update_binary) if um.update_binary else '<span class="dm">Not found</span>'}</span></div>
+<div class="profile-row"><span class="profile-label">Config File</span><span class="loc">{esc(um.update_config) if um.update_config else '<span class="dm">Not found</span>'}</span></div>
+<div class="profile-row"><span class="profile-label">HTTPS</span><span class="{"ok" if um.uses_https else "bad"}">{"Yes" if um.uses_https else "No"}</span></div>
+<div class="profile-row"><span class="profile-label">Signature Verification</span><span class="{"ok" if um.uses_signing else "bad"}">{"Yes" if um.uses_signing else "No"}</span></div>
+<div class="profile-row"><span class="profile-label">Rollback Protection</span><span class="{"ok" if um.has_rollback_protection else "bad"}">{"Yes" if um.has_rollback_protection else "No"}</span></div>
+<div class="profile-row"><span class="profile-label">Update Server</span><span class="loc">{esc(um.update_server) if um.update_server else '<span class="dm">Not configured</span>'}</span></div>
+<div class="profile-row"><span class="profile-label">Risk Level</span><span class="{risk_class}">{esc(um.risk_level)}</span></div>
+</div>'''
+        if um.issues:
+            update_html += '<div style="margin-top:10px">'
+            for issue in um.issues:
+                update_html += f'<div class="top-finding"><span class="sev-badge high">ISSUE</span><span>{esc(issue)}</span></div>'
+            update_html += '</div>'
+        if um.recommendation:
+            update_html += f'<div style="margin-top:8px;font-size:11px;color:var(--dm)"><b>Recommendation:</b> {esc(um.recommendation)}</div>'
+    else:
+        update_html = '<div class="dm">No update mechanism data available</div>'
+
+    # Missing tools warning
+    missing_tools_html = ""
+    if result.missing_tools:
+        tools_list = ", ".join(result.missing_tools)
+        missing_tools_html = f'''<div style="background:rgba(210,153,34,0.1);border:1px solid var(--wrn);padding:10px;margin-bottom:15px;border-radius:4px;font-size:11px">
+<span class="wrn" style="font-weight:600">Missing Tools:</span> {esc(tools_list)}
+<div class="dm" style="margin-top:4px">Some analysis capabilities are reduced. Install missing tools for complete results.</div>
+</div>'''
 
     # SBOM table rows
     sbom_rows = ""
@@ -492,6 +587,9 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 <a href="#sec-services">Network Services</a>
 <a href="#sec-kernel">Kernel Hardening</a>
 <a href="#sec-signing">Firmware Signing</a>
+<a href="#sec-crypto-bins">Crypto Binaries</a>
+<a href="#sec-svc-privs">Service Privileges</a>
+<a href="#sec-update">Update Mechanism</a>
 <a href="#sec-deps">Dep Risks</a>
 <a href="#sec-banned">Banned Functions</a>
 <a href="#sec-vulns">Vuln Versions</a>
@@ -515,9 +613,20 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 <div class="profile-row"><span class="profile-label">PXN (ARM)</span>{kflag(kh.pxn_enabled)}</div>
 <div class="profile-row"><span class="profile-label">Stack Protector</span>{kflag(kh.stack_protector)}</div>
 <div class="profile-row"><span class="profile-label">FORTIFY_SOURCE</span>{kflag(kh.fortify_source)}</div>
+<div class="profile-row"><span class="profile-label">Usercopy Protection</span>{kflag(kh.usercopy_protection)}</div>
 <div class="profile-row"><span class="profile-label">RODATA Enforced</span>{kflag(kh.rodata_enforced)}</div>
 <div class="profile-row"><span class="profile-label">dmesg Restricted</span>{kflag(kh.dmesg_restricted)}</div>
 </div>'''
+        if kh.issues:
+            kernel_html += '<div style="margin-top:10px">'
+            for issue in kh.issues:
+                kernel_html += f'<div class="top-finding"><span class="sev-badge high">ISSUE</span><span>{esc(issue)}</span></div>'
+            kernel_html += '</div>'
+        if kh.recommendations:
+            kernel_html += '<div style="margin-top:10px"><strong>Recommendations:</strong><ul style="margin:5px 0;padding-left:20px">'
+            for rec in kh.recommendations:
+                kernel_html += f'<li style="margin:3px 0;font-size:11px">{esc(rec)}</li>'
+            kernel_html += '</ul></div>'
     elif result.kernel_hardening:
         kernel_html = '<div class="bad">Kernel config not found - cannot verify hardening</div>'
     else:
@@ -571,6 +680,7 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 </div>
 <div class="card-body" id="overview">
 
+{missing_tools_html}
 <div class="grade-row">
 <span class="grade g{grade.lower()}">{grade}</span>
 <div class="grade-info">
@@ -710,6 +820,42 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 </div>
 <div class="card-body collapsed" id="signing">
 {signing_html}
+</div></div>
+</section>
+
+<!-- CRYPTO BINARIES -->
+<section id="sec-crypto-bins">
+<div class="card">
+<div class="card-title" onclick="toggleSection('crypto-bins')">
+<span>Crypto Binaries ({len(result.crypto_binaries)})</span>
+<span class="toggle-btn" id="crypto-bins-btn">&#9654;</span>
+</div>
+<div class="card-body collapsed" id="crypto-bins">
+{f'<div class="tbl-wrap tbl-scroll"><table id="cryptoBinTable"><thead><tr><th>Name</th><th>Purpose</th><th>Version</th><th>Network</th><th>NX</th><th>PIE</th><th>Canary</th><th>RELRO</th><th>Risk</th><th>Issues</th></tr></thead><tbody>{crypto_bin_rows}</tbody></table></div>' if result.crypto_binaries else '<div class="dm">No cryptographic binaries detected</div>'}
+</div></div>
+</section>
+
+<!-- SERVICE PRIVILEGES -->
+<section id="sec-svc-privs">
+<div class="card">
+<div class="card-title" onclick="toggleSection('svc-privs')">
+<span>Service Privileges ({len(result.service_privileges)})</span>
+<span class="toggle-btn" id="svc-privs-btn">&#9654;</span>
+</div>
+<div class="card-body collapsed" id="svc-privs">
+{f'<div class="tbl-wrap tbl-scroll"><table id="svcPrivTable"><thead><tr><th>Service</th><th>Binary</th><th>User:Group</th><th>Root</th><th>Capabilities</th><th>Chroot</th><th>Namespaces</th><th>Cgroups</th><th>Risk</th></tr></thead><tbody>{svc_priv_rows}</tbody></table></div>' if result.service_privileges else '<div class="dm">No service privilege data available</div>'}
+</div></div>
+</section>
+
+<!-- UPDATE MECHANISM -->
+<section id="sec-update">
+<div class="card">
+<div class="card-title" onclick="toggleSection('update')">
+<span>Update Mechanism</span>
+<span class="toggle-btn" id="update-btn">&#9654;</span>
+</div>
+<div class="card-body collapsed" id="update">
+{update_html}
 </div></div>
 </section>
 
