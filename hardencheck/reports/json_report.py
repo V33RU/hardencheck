@@ -130,6 +130,18 @@ def generate_json_report(result: ScanResult, output_path: Path):
             }
             for t in result.security_tests
         ],
+        "cve_correlation": {
+            "enabled": result.cve_correlation.enabled,
+            "components_queried": result.cve_correlation.components_queried,
+            "unique_cpes_queried": result.cve_correlation.unique_cpes_queried,
+            "cache_hits": result.cve_correlation.cache_hits,
+            "api_calls": result.cve_correlation.api_calls,
+            "api_errors": result.cve_correlation.api_errors,
+            "cves_found": result.cve_correlation.cves_found,
+            "api_available": result.cve_correlation.api_available,
+            "duration_seconds": result.cve_correlation.duration_seconds,
+            "data_sources": result.cve_correlation.data_sources,
+        } if result.cve_correlation else {},
         "crypto_binaries": [
             {
                 "name": cb.name,
