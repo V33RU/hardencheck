@@ -207,6 +207,21 @@ class SecurityTestFinding:
 
 
 @dataclass
+class CVECorrelationSummary:
+    """Summary of live CVE correlation results."""
+    enabled: bool = False
+    components_queried: int = 0
+    unique_cpes_queried: int = 0
+    cache_hits: int = 0
+    api_calls: int = 0
+    api_errors: int = 0
+    cves_found: int = 0
+    api_available: bool = True
+    duration_seconds: float = 0.0
+    data_sources: List[str] = field(default_factory=list)
+
+
+@dataclass
 class CryptographicBinary:
     """Security-sensitive cryptographic utility binary."""
     name: str
@@ -347,3 +362,4 @@ class ScanResult:
     missing_tools: List[str] = field(default_factory=list)
     sbom: Optional[SBOMResult] = None
     pqc_readiness: Optional[dict] = None
+    cve_correlation: Optional[CVECorrelationSummary] = None
