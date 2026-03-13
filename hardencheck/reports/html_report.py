@@ -99,6 +99,16 @@ def _aggregate_severities(result: ScanResult) -> Tuple[Dict[str, int], List[Tupl
                 counts[key] += 1
             findings.append((sev.value, sev.name, f"Update mechanism: {issue}"))
 
+    # PQC readiness
+    if result.pqc_readiness:
+        risk_map = {"CRITICAL": Severity.CRITICAL, "HIGH": Severity.HIGH, "MEDIUM": Severity.MEDIUM, "LOW": Severity.LOW}
+        for f in result.pqc_readiness.get("findings", []):
+            sev = risk_map.get(f.get("risk_level", "MEDIUM"), Severity.MEDIUM)
+            key = sev.name.lower()
+            if key in counts:
+                counts[key] += 1
+            findings.append((sev.value, sev.name, f"PQC: {f['binary']} uses {', '.join(f.get('vulnerable_algorithms', [])[:3])} (quantum-vulnerable)"))
+
     # Sort by severity desc, take top 5
     findings.sort(key=lambda x: -x[0])
     # Deduplicate similar findings for top display
@@ -220,6 +230,50 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
         vuln_rows += f'<tr><td class="{sev_class}">{esc(t.severity.name)}</td><td>{esc(t.test_type)}</td>'
         vuln_rows += f'<td>{esc(t.component)}</td><td>{esc(t.version)}</td>'
         vuln_rows += f'<td>{esc(t.issue)}</td><td class="loc">{esc(t.cve_id)}</td></tr>'
+
+    # PQC readiness section
+    pqc_html = ""
+    if result.pqc_readiness and result.pqc_readiness.get("findings"):
+        pqc = result.pqc_readiness
+        pqc_overall = pqc["overall_readiness"]
+        pqc_color = {"READY": "ok", "HYBRID": "wrn", "NOT_READY": "bad", "CRITICAL": "bad"}.get(pqc_overall, "dm")
+        pqc_summ = pqc.get("summary", {})
+
+        pqc_html += f'''<div class="profile">
+<div class="profile-row"><span class="profile-label">Overall Readiness</span><span class="{pqc_color}" style="font-weight:700">{esc(pqc_overall)}</span></div>
+<div class="profile-row"><span class="profile-label">Crypto Binaries</span><span>{pqc_summ.get("total_crypto_binaries", 0)}</span></div>
+<div class="profile-row"><span class="profile-label">PQC Ready</span><span class="ok">{pqc_summ.get("pqc_ready", 0)}</span></div>
+<div class="profile-row"><span class="profile-label">Hybrid (Classical+PQC)</span><span class="wrn">{pqc_summ.get("hybrid", 0)}</span></div>
+<div class="profile-row"><span class="profile-label">Vulnerable Only</span><span class="bad">{pqc_summ.get("vulnerable_only", 0)}</span></div>
+<div class="profile-row"><span class="profile-label">Deprecated Crypto</span><span class="bad">{pqc_summ.get("deprecated", 0)}</span></div>
+</div>'''
+
+        pqc_rows = ""
+        for f in pqc["findings"]:
+            r_class = {"READY": "ok", "HYBRID": "wrn", "NOT_READY": "bad", "CRITICAL": "bad"}.get(f["readiness"], "dm")
+            risk_class = "bad" if f["risk_level"] in ("CRITICAL", "HIGH") else "wrn" if f["risk_level"] == "MEDIUM" else ""
+            vuln_str = ", ".join(f.get("vulnerable_algorithms", [])[:4]) or "None"
+            pqc_str = ", ".join(f.get("pqc_algorithms", [])[:3]) or "None"
+            pqc_rows += f'<tr><td class="loc">{esc(f["binary"])}</td><td>{esc(f.get("crypto_library", ""))}</td>'
+            pqc_rows += f'<td>{esc(f.get("crypto_version", ""))}</td>'
+            pqc_rows += f'<td class="bad">{esc(vuln_str)}</td>'
+            pqc_rows += f'<td class="ok">{esc(pqc_str)}</td>'
+            pqc_rows += f'<td>{"Yes" if f.get("has_network") else "No"}</td>'
+            pqc_rows += f'<td class="{r_class}">{esc(f["readiness"])}</td>'
+            pqc_rows += f'<td class="{risk_class}">{esc(f["risk_level"])}</td></tr>'
+
+        pqc_html += f'''<div class="tbl-wrap tbl-scroll" style="margin-top:10px">
+<table id="pqcTable"><thead><tr><th>Binary</th><th>Crypto Lib</th><th>Version</th><th>Vulnerable Algos</th><th>PQC Algos</th><th>Network</th><th>Readiness</th><th>Risk</th></tr></thead>
+<tbody>{pqc_rows}</tbody></table></div>'''
+
+        recs = pqc.get("recommendations", [])
+        if recs:
+            pqc_html += '<div style="margin-top:12px"><strong>Recommendations:</strong><ul style="margin:5px 0;padding-left:20px">'
+            for r in recs:
+                pqc_html += f'<li style="margin:3px 0;font-size:11px">{esc(r)}</li>'
+            pqc_html += '</ul></div>'
+    else:
+        pqc_html = '<div class="dm">No quantum-vulnerable cryptographic algorithm usage detected</div>'
 
     # SBOM table rows
     sbom_rows = ""
@@ -441,6 +495,7 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 <a href="#sec-deps">Dep Risks</a>
 <a href="#sec-banned">Banned Functions</a>
 <a href="#sec-vulns">Vuln Versions</a>
+<a href="#sec-pqc">PQC Readiness</a>
 <a href="#sec-sbom">SBOM</a>
 <a href="#sec-classification">Classification</a>
 </nav>''' if not slim else ''
@@ -694,6 +749,18 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 </div>
 <div class="card-body collapsed" id="vulns">
 {f'<div class="tbl-wrap tbl-scroll"><table id="vulnTable"><thead><tr><th>Severity</th><th>Type</th><th>Component</th><th>Version</th><th>Issue</th><th>CVE</th></tr></thead><tbody>{vuln_rows}</tbody></table></div>' if result.security_tests else '<div class="dm">No vulnerable versions detected</div>'}
+</div></div>
+</section>
+
+<!-- PQC READINESS -->
+<section id="sec-pqc">
+<div class="card">
+<div class="card-title" onclick="toggleSection('pqc')">
+<span>Post-Quantum Crypto Readiness{f" ({result.pqc_readiness['summary']['total_crypto_binaries']})" if result.pqc_readiness and result.pqc_readiness.get('summary') else ""}</span>
+<span class="toggle-btn" id="pqc-btn">&#9654;</span>
+</div>
+<div class="card-body collapsed" id="pqc">
+{pqc_html}
 </div></div>
 </section>
 
