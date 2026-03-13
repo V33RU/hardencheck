@@ -346,3 +346,4 @@ class ScanResult:
     aslr_summary: Dict = field(default_factory=dict)
     missing_tools: List[str] = field(default_factory=list)
     sbom: Optional[SBOMResult] = None
+    pqc_readiness: Optional[dict] = None
