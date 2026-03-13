@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from hardencheck.models import ScanResult
+from hardencheck.models import ScanResult, CVECorrelationSummary
 from hardencheck.constants.core import BANNER
 from hardencheck.core.context import ScanContext
 from hardencheck.analyzers.file_discovery import FileDiscovery
@@ -23,6 +23,7 @@ from hardencheck.analyzers.update_mechanism import UpdateMechanismAnalyzer
 from hardencheck.analyzers.aslr_summary import ASLRSummaryGenerator
 from hardencheck.analyzers.sbom_generator import SBOMGenerator
 from hardencheck.analyzers.pqc_readiness import PQCReadinessAnalyzer
+from hardencheck.analyzers.cve_correlator import CVECorrelator
 from hardencheck.reports.grading import classify_binary, calculate_grade
 
 
@@ -31,7 +32,8 @@ class HardenCheck:
 
     def __init__(self, target: Path, threads: int = 4, verbose: bool = False, extended: bool = False,
                  include_patterns: Optional[List[str]] = None, exclude_patterns: Optional[List[str]] = None,
-                 quiet: bool = False):
+                 quiet: bool = False, nvd_api_key: str = "", skip_cve_lookup: bool = False,
+                 cve_cache_enabled: bool = True, cve_cache_dir: Optional[Path] = None):
         """Initialize scanner.
 
         Args:
@@ -42,6 +44,10 @@ class HardenCheck:
             include_patterns: If set, only scan paths matching any of these globs (relative to target)
             exclude_patterns: If set, skip paths matching any of these globs (relative to target)
             quiet: If True, suppress banner and progress output (for CI/scripting)
+            nvd_api_key: NVD API key for faster rate limits
+            skip_cve_lookup: Skip live CVE correlation
+            cve_cache_enabled: Enable CVE response caching
+            cve_cache_dir: Custom CVE cache directory
         """
         self.ctx = ScanContext(
             target=target,
@@ -53,6 +59,7 @@ class HardenCheck:
             quiet=quiet,
         )
         self.quiet = self.ctx.quiet
+        self.skip_cve_lookup = skip_cve_lookup
 
         # Instantiate analyzers
         self.file_discovery = FileDiscovery(self.ctx)
@@ -72,6 +79,12 @@ class HardenCheck:
         self.aslr_summary_generator = ASLRSummaryGenerator(self.ctx)
         self.sbom_generator = SBOMGenerator(self.ctx)
         self.pqc_analyzer = PQCReadinessAnalyzer(self.ctx)
+        self.cve_correlator = CVECorrelator(
+            self.ctx,
+            nvd_api_key=nvd_api_key,
+            cache_enabled=cve_cache_enabled,
+            cache_dir=cve_cache_dir,
+        )
 
     @property
     def target(self):
@@ -104,7 +117,7 @@ class HardenCheck:
                 print(f"    - Missing: {', '.join(missing)}")
             print()
 
-            print("[1/10] Discovering files...")
+            print("[1/18] Discovering files...")
         binaries_raw, sources, configs = self.file_discovery.find_files()
         if not self.quiet:
             print(f"      ELF binaries: {len(binaries_raw)}")
@@ -113,7 +126,7 @@ class HardenCheck:
             print()
 
         if not self.quiet:
-            print("[2/10] Analyzing firmware profile...")
+            print("[2/18] Analyzing firmware profile...")
         profile = self.firmware_profiler.detect_firmware_profile(binaries_raw)
         if not self.quiet:
             print(f"      Type: {profile.fw_type}")
@@ -154,7 +167,7 @@ class HardenCheck:
             print()
 
         if not self.quiet:
-            print("[3/10] Analyzing binary hardening + ASLR entropy...")
+            print("[3/18] Analyzing binary hardening + ASLR entropy...")
         analyzed_binaries = []
 
         BATCH_SIZE = 50
@@ -190,7 +203,7 @@ class HardenCheck:
             print(f"      PIE binaries with ASLR analysis: {aslr_count}")
             print()
 
-            print("[4/10] Detecting network services/daemons...")
+            print("[4/18] Detecting network services/daemons...")
         daemons = self.daemon_detector.detect_daemons(analyzed_binaries)
         if not self.quiet:
             if daemons:
@@ -203,7 +216,7 @@ class HardenCheck:
                 print("      No daemons detected")
             print()
 
-            print("[5/10] Analyzing dependency chain...")
+            print("[5/18] Analyzing dependency chain...")
         dep_risks = self.binary_analyzer.analyze_dependencies(analyzed_binaries)
         if not self.quiet:
             if dep_risks:
@@ -215,7 +228,7 @@ class HardenCheck:
                 print("      No insecure dependencies")
             print()
 
-            print("[6/10] Scanning for banned functions...")
+            print("[6/18] Scanning for banned functions...")
         banned_binary = self.banned_scanner.scan_banned_functions_binary(analyzed_binaries)
         banned_source = self.banned_scanner.scan_banned_functions_source(sources)
         banned_all = banned_binary + banned_source
@@ -223,7 +236,7 @@ class HardenCheck:
             print(f"      Found: {len(banned_all)} ({len(banned_binary)} binary, {len(banned_source)} source)")
             print()
 
-            print("[7/10] Scanning for credentials and certificates...")
+            print("[7/18] Scanning for credentials and certificates...")
         credentials = self.credential_scanner.scan_credentials(configs, sources)
         certificates = self.certificate_scanner.scan_certificates()
         if not self.quiet:
@@ -231,13 +244,13 @@ class HardenCheck:
             print(f"      Certificates: {len(certificates)} files")
             print()
 
-            print("[8/10] Scanning configuration files...")
+            print("[8/18] Scanning configuration files...")
         config_issues = self.config_scanner.scan_configurations(configs)
         if not self.quiet:
             print(f"      Config issues: {len(config_issues)}")
             print()
 
-            print("[9/10] Generating ASLR entropy summary...")
+            print("[9/18] Generating ASLR entropy summary...")
         aslr_summary = self.aslr_summary_generator.generate_aslr_summary(analyzed_binaries)
         if not self.quiet:
             if aslr_summary["analyzed"] > 0:
@@ -248,7 +261,7 @@ class HardenCheck:
                       f"Ineffective={aslr_summary['by_rating']['ineffective']}")
             print()
 
-            print("[10/10] Generating SBOM (Software Bill of Materials)...")
+            print("[10/18] Generating SBOM (Software Bill of Materials)...")
         sbom = self.sbom_generator.generate_sbom(analyzed_binaries, profile)
         if not self.quiet:
             print(f"      Components: {sbom.total_components} ({sbom.total_applications} apps, {sbom.total_libraries} libs)")
@@ -259,7 +272,36 @@ class HardenCheck:
                 print(f"      Package source: {sbom.package_manager_source}")
             print()
 
-            print("[11/17] Detecting cryptographic binaries...")
+            print("[11/18] Correlating SBOM with live CVE databases...")
+        cve_correlation_summary = CVECorrelationSummary(enabled=False)
+        live_cve_findings = []
+        if not self.skip_cve_lookup and sbom:
+            live_cve_findings = self.cve_correlator.correlate_cves(sbom)
+            stats = self.cve_correlator.get_stats()
+            cve_correlation_summary = CVECorrelationSummary(
+                enabled=True,
+                components_queried=stats["components_queried"],
+                unique_cpes_queried=stats["unique_cpes_queried"],
+                cache_hits=stats["cache_hits"],
+                api_calls=stats["api_calls"],
+                api_errors=stats["api_errors"],
+                cves_found=stats["cves_found"],
+                api_available=stats["api_available"],
+                duration_seconds=stats["duration_seconds"],
+                data_sources=stats["data_sources"],
+            )
+            if not self.quiet:
+                print(f"      CVEs found: {len(live_cve_findings)}")
+                print(f"      API calls: {stats['api_calls']} (cache hits: {stats['cache_hits']})")
+                if not stats["api_available"]:
+                    print("      WARNING: API unreachable, using static checks only")
+        else:
+            if not self.quiet:
+                print("      Skipped (--skip-cve-lookup or no SBOM)")
+        if not self.quiet:
+            print()
+
+            print("[12/18] Detecting cryptographic binaries...")
         crypto_binaries = self.crypto_detector.detect_cryptographic_binaries(analyzed_binaries)
         if not self.quiet:
             if crypto_binaries:
@@ -273,7 +315,7 @@ class HardenCheck:
                 print("      No cryptographic binaries detected")
             print()
 
-            print("[12/17] Analyzing firmware signing & secure boot...")
+            print("[13/18] Analyzing firmware signing & secure boot...")
         firmware_signing = self.firmware_signing_analyzer.detect_firmware_signing()
         if not self.quiet:
             if firmware_signing.is_signed:
@@ -289,7 +331,7 @@ class HardenCheck:
                     print(f"        - {issue}")
             print()
 
-            print("[13/17] Analyzing service privileges...")
+            print("[14/18] Analyzing service privileges...")
         service_privileges = self.service_privilege_analyzer.detect_service_privileges(analyzed_binaries, daemons)
         if not self.quiet:
             if service_privileges:
@@ -306,7 +348,7 @@ class HardenCheck:
                 print("      No service configurations found")
             print()
 
-            print("[14/17] Analyzing kernel hardening...")
+            print("[15/18] Analyzing kernel hardening...")
         kernel_hardening = self.kernel_hardening_analyzer.detect_kernel_hardening()
         if not self.quiet:
             if kernel_hardening.config_available:
@@ -330,7 +372,7 @@ class HardenCheck:
                 print("      Kernel config not found")
             print()
 
-            print("[15/17] Analyzing update mechanism...")
+            print("[16/18] Analyzing update mechanism...")
         update_mechanism = self.update_mechanism_analyzer.detect_update_mechanism(analyzed_binaries)
         if not self.quiet:
             if update_mechanism.update_system != "Unknown":
@@ -347,26 +389,32 @@ class HardenCheck:
                 print("      Update mechanism not detected")
             print()
 
-            print("[16/17] Running security tests...")
+            print("[17/18] Running security tests...")
         security_tests = []
         weak_crypto_findings = self.security_tester.test_weak_crypto(configs, analyzed_binaries)
         security_tests.extend(weak_crypto_findings)
-        cve_findings = self.security_tester.test_cve_vulnerabilities(sbom)
+        # Skip static CVE checks for components already covered by live CVE data
+        covered_components = {f.component.lower() for f in live_cve_findings}
+        cve_findings = self.security_tester.test_cve_vulnerabilities(sbom, skip_components=covered_components)
         security_tests.extend(cve_findings)
         default_creds_findings = self.security_tester.test_default_credentials(configs, daemons)
         security_tests.extend(default_creds_findings)
+        # Merge live CVE findings
+        security_tests.extend(live_cve_findings)
         if not self.quiet:
             print(f"      Security test findings: {len(security_tests)}")
             if security_tests:
                 weak_crypto_count = sum(1 for f in security_tests if f.test_type == "weak_crypto")
-                cve_count = sum(1 for f in security_tests if f.test_type == "cve")
+                static_cve_count = sum(1 for f in security_tests if f.test_type == "cve")
+                live_cve_count = sum(1 for f in security_tests if f.test_type == "live_cve")
                 creds_count = sum(1 for f in security_tests if f.test_type == "default_creds")
                 print(f"        - Weak crypto: {weak_crypto_count}")
-                print(f"        - CVE checks: {cve_count}")
+                print(f"        - Static CVE checks: {static_cve_count}")
+                print(f"        - Live CVE findings: {live_cve_count}")
                 print(f"        - Default credentials: {creds_count}")
             print()
 
-            print("[17/17] Analyzing post-quantum crypto readiness...")
+            print("[18/18] Analyzing post-quantum crypto readiness...")
         pqc_readiness = self.pqc_analyzer.analyze_pqc_readiness(analyzed_binaries)
         if not self.quiet:
             pqc_summary = pqc_readiness.get("summary", {})
@@ -407,6 +455,7 @@ class HardenCheck:
   Kernel Hardening:{kernel_hardening.hardening_score}/100
   Update Mechanism:{update_mechanism.update_system} ({update_mechanism.risk_level} risk)
   Security Tests:{len(security_tests)} findings
+  Live CVE:     {cve_correlation_summary.cves_found} CVEs ({cve_correlation_summary.api_calls} API calls, {cve_correlation_summary.cache_hits} cached)
   PQC Readiness:{pqc_readiness['overall_readiness']} ({pqc_summary.get('total_crypto_binaries', 0)} crypto binaries)
   SBOM:         {sbom.total_components} components ({sbom.components_with_cpe} with CPE)
 
@@ -436,5 +485,6 @@ class HardenCheck:
             aslr_summary=aslr_summary,
             missing_tools=missing_tools,
             sbom=sbom,
-            pqc_readiness=pqc_readiness
+            pqc_readiness=pqc_readiness,
+            cve_correlation=cve_correlation_summary,
         )
