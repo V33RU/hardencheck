@@ -7,3 +7,4 @@ from hardencheck.constants.security import *
 from hardencheck.constants.firmware import *
 from hardencheck.constants.crypto import *
 from hardencheck.constants.sbom import *
+from hardencheck.constants.pqc import *
