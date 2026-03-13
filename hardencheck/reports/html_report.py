@@ -245,9 +245,31 @@ def generate_html_report(result: ScanResult, output_path: Path, slim: bool = Fal
     vuln_rows = ""
     for t in sorted(result.security_tests, key=lambda x: -x.severity.value):
         sev_class = "bad" if t.severity.value >= 3 else "wrn" if t.severity.value >= 2 else ""
-        vuln_rows += f'<tr><td class="{sev_class}">{esc(t.severity.name)}</td><td>{esc(t.test_type)}</td>'
+        type_display = "Live CVE" if t.test_type == "live_cve" else t.test_type.replace("_", " ").title()
+        type_class = ' class="ok"' if t.test_type == "live_cve" else ""
+        vuln_rows += f'<tr><td class="{sev_class}">{esc(t.severity.name)}</td><td{type_class}>{esc(type_display)}</td>'
         vuln_rows += f'<td>{esc(t.component)}</td><td>{esc(t.version)}</td>'
-        vuln_rows += f'<td>{esc(t.issue)}</td><td class="loc">{esc(t.cve_id)}</td></tr>'
+        vuln_rows += f'<td>{esc(t.issue)}</td><td class="loc">{esc(t.details)}</td>'
+        vuln_rows += f'<td class="loc">{esc(t.cve_id)}</td></tr>'
+
+    # CVE correlation summary box
+    cve_summary_html = ""
+    if result.cve_correlation and result.cve_correlation.enabled:
+        cc = result.cve_correlation
+        status_class = "ok" if cc.api_available else "wrn"
+        status_text = "Online" if cc.api_available else "Offline (static fallback)"
+        cve_count_class = "bad" if cc.cves_found > 0 else "ok"
+        sources = ", ".join(cc.data_sources) if cc.data_sources else "None"
+        cve_summary_html = f'''<div class="profile" style="margin-bottom:10px">
+<div class="profile-row"><span class="profile-label">Live CVE Correlation</span><span class="{status_class}">{status_text}</span></div>
+<div class="profile-row"><span class="profile-label">Components Queried</span><span>{cc.components_queried} ({cc.unique_cpes_queried} unique CPEs)</span></div>
+<div class="profile-row"><span class="profile-label">CVEs Found</span><span class="{cve_count_class}">{cc.cves_found}</span></div>
+<div class="profile-row"><span class="profile-label">API Calls / Cache Hits</span><span>{cc.api_calls} / {cc.cache_hits}</span></div>
+<div class="profile-row"><span class="profile-label">Data Sources</span><span>{esc(sources)}</span></div>
+<div class="profile-row"><span class="profile-label">Duration</span><span>{cc.duration_seconds}s</span></div>
+</div>'''
+    elif result.cve_correlation and not result.cve_correlation.enabled:
+        cve_summary_html = '<div class="dm" style="margin-bottom:10px">Live CVE correlation disabled (static checks only)</div>'
 
     # PQC readiness section
     pqc_html = ""
@@ -890,11 +912,12 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 <section id="sec-vulns">
 <div class="card">
 <div class="card-title" onclick="toggleSection('vulns')">
-<span>Vuln Versions ({len(result.security_tests)})</span>
+<span>Vuln Versions &amp; Live CVE ({len(result.security_tests)})</span>
 <span class="toggle-btn" id="vulns-btn">&#9654;</span>
 </div>
 <div class="card-body collapsed" id="vulns">
-{f'<div class="tbl-wrap tbl-scroll"><table id="vulnTable"><thead><tr><th>Severity</th><th>Type</th><th>Component</th><th>Version</th><th>Issue</th><th>CVE</th></tr></thead><tbody>{vuln_rows}</tbody></table></div>' if result.security_tests else '<div class="dm">No vulnerable versions detected</div>'}
+{cve_summary_html}
+{f'<div class="search-box"><input type="text" id="vulnSearch" placeholder="Search vulnerabilities..." onkeyup="filterTable(\'vulnSearch\', \'vulnTable\')"><button onclick="filterBySeverity(\'vulnTable\', \'CRITICAL\')">Critical</button><button onclick="filterBySeverity(\'vulnTable\', \'HIGH\')">High</button><button onclick="filterBySeverity(\'vulnTable\', \'\')">All</button></div><div class="tbl-wrap tbl-scroll"><table id="vulnTable"><thead><tr><th>Severity</th><th>Type</th><th>Component</th><th>Version</th><th>Issue</th><th>CVSS / Details</th><th>CVE</th></tr></thead><tbody>{vuln_rows}</tbody></table></div>' if result.security_tests else '<div class="dm">No vulnerable versions detected</div>'}
 </div></div>
 </section>
 
