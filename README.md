@@ -38,7 +38,7 @@ hardencheck/
 │   ├── __init__.py             # Public API
 │   ├── __main__.py             # python -m hardencheck
 │   ├── cli.py                  # Argument parsing & orchestration
-│   ├── scanner.py              # HardenCheck orchestrator (16-step pipeline)
+│   ├── scanner.py              # HardenCheck orchestrator (17-step pipeline)
 │   ├── models.py               # 18 dataclasses + 3 enums
 │   ├── constants/              # All lookup tables & configuration
 │   │   ├── core.py             # VERSION, BANNER, SECURE_ENV
@@ -49,12 +49,13 @@ hardencheck/
 │   │   ├── security.py         # CVE patterns, banned functions
 │   │   ├── firmware.py         # Firmware type signatures
 │   │   ├── crypto.py           # Crypto binary patterns
+│   │   ├── pqc.py              # Post-quantum crypto detection patterns
 │   │   └── sbom.py             # CPE 2.3 mapping (90+ components)
 │   ├── core/                   # Shared infrastructure
 │   │   ├── context.py          # ScanContext (shared state)
 │   │   ├── base.py             # BaseAnalyzer (abstract base)
 │   │   └── utils.py            # safe_read_file, version_compare
-│   ├── analyzers/              # 17 pluggable analyzer modules
+│   ├── analyzers/              # 18 pluggable analyzer modules
 │   │   ├── file_discovery.py       # ELF, source, config file discovery
 │   │   ├── firmware_profile.py     # Architecture, libc, kernel fingerprint
 │   │   ├── binary_analysis.py      # NX, Canary, PIE, RELRO, Fortify, CFI
@@ -71,6 +72,7 @@ hardencheck/
 │   │   ├── service_privileges.py   # Service privilege & isolation audit
 │   │   ├── kernel_hardening.py     # Kernel security config analysis
 │   │   ├── update_mechanism.py     # OTA / update security analysis
+│   │   ├── pqc_readiness.py        # Post-quantum crypto readiness analyzer
 │   │   └── sbom_generator.py       # Software Bill of Materials generator
 │   └── reports/                # Output generators
 │       ├── grading.py          # Security grading (A-F) & classification
@@ -232,6 +234,7 @@ python3 -m hardencheck /path/to/firmware -o report.html
 | **Kernel Hardening** | KASLR, SMEP/SMAP, stack protector, fortify, dmesg |
 | **Update Mechanism** | OTA security, HTTPS, signing, rollback protection |
 | **Vuln Versions** | CVE pattern matching, weak crypto detection, default creds |
+| **PQC Readiness** | Post-quantum crypto assessment: detects RSA/ECDSA/DH usage, checks for ML-KEM/ML-DSA/SLH-DSA adoption |
 | **SBOM Generation** | CycloneDX 1.5 + SPDX 2.3, CPE 2.3, PURL, licenses, dependency tree |
 | **Cross-Validation** | Up to 4 tools per binary, confidence scoring (rabin2 x readelf x scanelf) |
 
@@ -340,8 +343,9 @@ Interactive HTML report with sidebar navigation, collapsible sections, executive
 | 11 | Hardcoded Credentials |
 | 12 | Certificates & Keys |
 | 13 | Configuration Issues |
-| 14 | SBOM Components (searchable + type filter) |
-| 15 | Classification (SECURED / PARTIAL / INSECURE) |
+| 14 | Post-Quantum Crypto Readiness (per-binary PQC assessment) |
+| 15 | SBOM Components (searchable + type filter) |
+| 16 | Classification (SECURED / PARTIAL / INSECURE) |
 
 ---
 
