@@ -22,6 +22,7 @@ from hardencheck.analyzers.kernel_hardening import KernelHardeningAnalyzer
 from hardencheck.analyzers.update_mechanism import UpdateMechanismAnalyzer
 from hardencheck.analyzers.aslr_summary import ASLRSummaryGenerator
 from hardencheck.analyzers.sbom_generator import SBOMGenerator
+from hardencheck.analyzers.pqc_readiness import PQCReadinessAnalyzer
 from hardencheck.reports.grading import classify_binary, calculate_grade
 
 
@@ -70,6 +71,7 @@ class HardenCheck:
         self.update_mechanism_analyzer = UpdateMechanismAnalyzer(self.ctx)
         self.aslr_summary_generator = ASLRSummaryGenerator(self.ctx)
         self.sbom_generator = SBOMGenerator(self.ctx)
+        self.pqc_analyzer = PQCReadinessAnalyzer(self.ctx)
 
     @property
     def target(self):
@@ -257,7 +259,7 @@ class HardenCheck:
                 print(f"      Package source: {sbom.package_manager_source}")
             print()
 
-            print("[11/15] Detecting cryptographic binaries...")
+            print("[11/17] Detecting cryptographic binaries...")
         crypto_binaries = self.crypto_detector.detect_cryptographic_binaries(analyzed_binaries)
         if not self.quiet:
             if crypto_binaries:
@@ -271,7 +273,7 @@ class HardenCheck:
                 print("      No cryptographic binaries detected")
             print()
 
-            print("[12/15] Analyzing firmware signing & secure boot...")
+            print("[12/17] Analyzing firmware signing & secure boot...")
         firmware_signing = self.firmware_signing_analyzer.detect_firmware_signing()
         if not self.quiet:
             if firmware_signing.is_signed:
@@ -287,7 +289,7 @@ class HardenCheck:
                     print(f"        - {issue}")
             print()
 
-            print("[13/15] Analyzing service privileges...")
+            print("[13/17] Analyzing service privileges...")
         service_privileges = self.service_privilege_analyzer.detect_service_privileges(analyzed_binaries, daemons)
         if not self.quiet:
             if service_privileges:
@@ -304,7 +306,7 @@ class HardenCheck:
                 print("      No service configurations found")
             print()
 
-            print("[14/15] Analyzing kernel hardening...")
+            print("[14/17] Analyzing kernel hardening...")
         kernel_hardening = self.kernel_hardening_analyzer.detect_kernel_hardening()
         if not self.quiet:
             if kernel_hardening.config_available:
@@ -328,7 +330,7 @@ class HardenCheck:
                 print("      Kernel config not found")
             print()
 
-            print("[15/15] Analyzing update mechanism...")
+            print("[15/17] Analyzing update mechanism...")
         update_mechanism = self.update_mechanism_analyzer.detect_update_mechanism(analyzed_binaries)
         if not self.quiet:
             if update_mechanism.update_system != "Unknown":
@@ -345,7 +347,7 @@ class HardenCheck:
                 print("      Update mechanism not detected")
             print()
 
-            print("[16/16] Running security tests...")
+            print("[16/17] Running security tests...")
         security_tests = []
         weak_crypto_findings = self.security_tester.test_weak_crypto(configs, analyzed_binaries)
         security_tests.extend(weak_crypto_findings)
@@ -362,6 +364,21 @@ class HardenCheck:
                 print(f"        - Weak crypto: {weak_crypto_count}")
                 print(f"        - CVE checks: {cve_count}")
                 print(f"        - Default credentials: {creds_count}")
+            print()
+
+            print("[17/17] Analyzing post-quantum crypto readiness...")
+        pqc_readiness = self.pqc_analyzer.analyze_pqc_readiness(analyzed_binaries)
+        if not self.quiet:
+            pqc_summary = pqc_readiness.get("summary", {})
+            total_pqc = pqc_summary.get("total_crypto_binaries", 0)
+            if total_pqc > 0:
+                readiness_icon = {"READY": "\U0001f7e2", "HYBRID": "\U0001f7e1", "NOT_READY": "\U0001f7e0", "CRITICAL": "\U0001f534"}.get(pqc_readiness["overall_readiness"], "\u26aa")
+                print(f"      {readiness_icon} Overall: {pqc_readiness['overall_readiness']}")
+                print(f"      Crypto binaries: {total_pqc}")
+                print(f"      PQC Ready: {pqc_summary.get('pqc_ready', 0)}, Hybrid: {pqc_summary.get('hybrid', 0)}, "
+                      f"Vulnerable: {pqc_summary.get('vulnerable_only', 0)}, Deprecated: {pqc_summary.get('deprecated', 0)}")
+            else:
+                print("      No cryptographic algorithm usage detected")
             print()
 
         duration = (datetime.now() - start_time).total_seconds()
@@ -390,6 +407,7 @@ class HardenCheck:
   Kernel Hardening:{kernel_hardening.hardening_score}/100
   Update Mechanism:{update_mechanism.update_system} ({update_mechanism.risk_level} risk)
   Security Tests:{len(security_tests)} findings
+  PQC Readiness:{pqc_readiness['overall_readiness']} ({pqc_summary.get('total_crypto_binaries', 0)} crypto binaries)
   SBOM:         {sbom.total_components} components ({sbom.components_with_cpe} with CPE)
 
   Duration: {duration:.1f}s
@@ -417,5 +435,6 @@ class HardenCheck:
             update_mechanism=update_mechanism,
             aslr_summary=aslr_summary,
             missing_tools=missing_tools,
-            sbom=sbom
+            sbom=sbom,
+            pqc_readiness=pqc_readiness
         )
