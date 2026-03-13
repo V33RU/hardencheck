@@ -17,6 +17,7 @@ from hardencheck.analyzers.kernel_hardening import KernelHardeningAnalyzer
 from hardencheck.analyzers.update_mechanism import UpdateMechanismAnalyzer
 from hardencheck.analyzers.aslr_summary import ASLRSummaryGenerator
 from hardencheck.analyzers.sbom_generator import SBOMGenerator
+from hardencheck.analyzers.pqc_readiness import PQCReadinessAnalyzer
 
 __all__ = [
     "FileDiscovery",
@@ -36,4 +37,5 @@ __all__ = [
     "UpdateMechanismAnalyzer",
     "ASLRSummaryGenerator",
     "SBOMGenerator",
+    "PQCReadinessAnalyzer",
 ]
