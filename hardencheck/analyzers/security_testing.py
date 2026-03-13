@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from hardencheck.models import Severity, BinaryAnalysis, Daemon, SBOMResult, SecurityTestFinding
 from hardencheck.constants.security import WEAK_CRYPTO_PATTERNS, VULNERABLE_VERSIONS
@@ -60,7 +60,8 @@ class SecurityTester(BaseAnalyzer):
 
         return findings
 
-    def test_cve_vulnerabilities(self, sbom: Optional[SBOMResult]) -> List[SecurityTestFinding]:
+    def test_cve_vulnerabilities(self, sbom: Optional[SBOMResult],
+                                  skip_components: Optional[Set[str]] = None) -> List[SecurityTestFinding]:
         """Test detected components against known vulnerable versions."""
         findings = []
 
@@ -68,6 +69,8 @@ class SecurityTester(BaseAnalyzer):
             return findings
 
         for component in sbom.components:
+            if skip_components and component.name.lower() in skip_components:
+                continue
             if component.version == "Unknown" or not component.version:
                 continue
 
