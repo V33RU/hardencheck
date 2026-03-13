@@ -200,6 +200,7 @@ def generate_json_report(result: ScanResult, output_path: Path):
             "risk_level": result.update_mechanism.risk_level if result.update_mechanism else "Unknown",
             "recommendation": result.update_mechanism.recommendation if result.update_mechanism else ""
         } if result.update_mechanism else {},
+        "pqc_readiness": result.pqc_readiness if result.pqc_readiness else {},
         "sbom": {
             "total_components": result.sbom.total_components,
             "total_libraries": result.sbom.total_libraries,
