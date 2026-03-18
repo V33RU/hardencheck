@@ -113,8 +113,6 @@ class ServicePrivilegeAnalyzer(BaseAnalyzer):
                 if runs_as_root:
                     risk_level = "HIGH"
                     issues.append("Service runs as root user")
-                elif user == "root":
-                    risk_level = "MEDIUM"
 
                 if not capabilities and runs_as_root:
                     issues.append("No capability restrictions - full root privileges")
