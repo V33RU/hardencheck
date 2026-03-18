@@ -42,6 +42,14 @@ class ConfigScanner(BaseAnalyzer):
             for line_num, line in enumerate(lines, start=1):
                 line_stripped = line.strip()
 
+                if not line_stripped or line_stripped.startswith("#") or line_stripped.startswith(";"):
+                    continue
+
+                # Strip inline comments so patterns don't match commented-out values
+                line_stripped = re.split(r'\s+#', line_stripped, maxsplit=1)[0].strip()
+                if not line_stripped:
+                    continue
+
                 for pattern, file_pattern, issue, severity in CONFIG_PATTERNS:
                     if file_pattern != "*" and file_pattern not in filename:
                         continue
