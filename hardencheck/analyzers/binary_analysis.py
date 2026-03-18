@@ -90,7 +90,6 @@ class BinaryAnalyzer(BaseAnalyzer):
             rpath_match = re.search(r'(?:RPATH|RUNPATH)[^\[]*\[([^\]]+)\]', out)
             if rpath_match:
                 result["rpath"] = rpath_match.group(1)
-                result["relro"] = "full"
 
         ret, out, _ = self._run_command([readelf, "-W", "--dyn-syms", str(filepath)], timeout=10)
         if ret == 0:
