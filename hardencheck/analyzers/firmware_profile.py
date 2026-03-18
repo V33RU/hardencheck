@@ -48,6 +48,11 @@ class FirmwareProfiler(BaseAnalyzer):
                 elif "msb" in out_lower or "big endian" in out_lower:
                     profile.endian = "Big Endian"
 
+                # Capture ABI detail (e.g. EABI5) from file output
+                abi_match = re.search(r'\b(EABI\d?)\b', out, re.IGNORECASE)
+                if abi_match:
+                    profile.abi = abi_match.group(1).upper()
+
         if profile.arch == "Unknown" and executables:
             try:
                 with open(executables[0][0], "rb") as f:
@@ -141,6 +146,9 @@ class FirmwareProfiler(BaseAnalyzer):
         profile.web_server = self._detect_web_server(binaries)
         profile.ssh_server = self._detect_ssh_server(binaries)
         profile.dns_server = self._detect_dns_server(binaries)
+        profile.platform = self._detect_platform(executables)
+        profile.shells = self._detect_shells()
+        profile.runtime = self._detect_runtime(binaries)
         profile.busybox_applets = self._count_busybox_applets()
         profile.kernel_modules = self._count_kernel_modules()
         profile.total_size_mb = self._calculate_total_size()
@@ -224,10 +232,13 @@ class FirmwareProfiler(BaseAnalyzer):
         detected = []
 
         for root, dirs, files in os.walk(self.target):
-            root_lower = root.lower()
+            # Only check the immediate directory name (basename), not the full path,
+            # to avoid false positives from parent directories with matching substrings.
+            dir_basename = os.path.basename(root).lower()
+            file_names_lower = [f.lower() for f in files]
             for fs_type, indicators in fs_indicators.items():
                 for indicator, magic in indicators:
-                    if indicator in root_lower or indicator in [f.lower() for f in files]:
+                    if dir_basename == indicator or indicator in file_names_lower:
                         if fs_type not in detected:
                             detected.append(fs_type)
             dirs[:] = dirs[:30]
@@ -480,7 +491,7 @@ class FirmwareProfiler(BaseAnalyzer):
         return round(total_bytes / (1024 * 1024), 2)
 
     def _detect_ssl_library(self) -> str:
-        """Detect SSL/TLS library used."""
+        """Detect SSL/TLS library and version using strings output for accuracy."""
         ssl_libs = {
             "OpenSSL": ["libssl.so", "libcrypto.so", "openssl"],
             "wolfSSL": ["libwolfssl.so", "wolfssl"],
@@ -493,26 +504,56 @@ class FirmwareProfiler(BaseAnalyzer):
             "axTLS": ["libaxtls.so", "axtls"],
         }
 
+        # Version string patterns to search inside the binary with `strings`
+        ssl_version_patterns = {
+            "OpenSSL": re.compile(r'OpenSSL\s+([\d.]+\w*(?:-fips)?)', re.IGNORECASE),
+            "wolfSSL": re.compile(r'wolfSSL\s+([\d.]+)', re.IGNORECASE),
+            "mbedTLS": re.compile(r'mbed\s*TLS\s+([\d.]+)', re.IGNORECASE),
+            "GnuTLS": re.compile(r'GnuTLS\s+([\d.]+)', re.IGNORECASE),
+            "LibreSSL": re.compile(r'LibreSSL\s+([\d.]+)', re.IGNORECASE),
+        }
+
         detected = []
+        detected_paths = {}
+
         for root, dirs, files in os.walk(self.target):
             for f in files:
                 f_lower = f.lower()
                 for ssl_name, indicators in ssl_libs.items():
-                    if ssl_name in detected:
+                    if ssl_name in [d.split()[0] for d in detected]:
                         continue
                     for indicator in indicators:
                         if indicator in f_lower:
-                            version = ""
-                            ver_match = re.search(r'\.so\.(\d+\.\d+\.?\d*)', f)
-                            if ver_match:
-                                version = f" {ver_match.group(1)}"
-                            detected.append(f"{ssl_name}{version}")
+                            detected_paths[ssl_name] = Path(root) / f
+                            detected.append(ssl_name)
                             break
             dirs[:] = dirs[:20]
             if len(detected) >= 2:
                 break
 
-        return ", ".join(detected) if detected else "Unknown"
+        # Now enrich with version from strings output
+        result = []
+        for ssl_name in detected:
+            version = ""
+            lib_path = detected_paths.get(ssl_name)
+            if lib_path and "strings" in self.tools:
+                ret, out, _ = self._run_command(
+                    [self.tools["strings"], "-n", "6", str(lib_path)], timeout=10
+                )
+                if ret == 0 and out:
+                    pat = ssl_version_patterns.get(ssl_name)
+                    if pat:
+                        m = pat.search(out)
+                        if m:
+                            version = f" {m.group(1)}"
+            if not version and lib_path:
+                # Fall back to .so.X.Y.Z in filename
+                ver_match = re.search(r'\.so\.(\d+\.\d+\.?\d*)', lib_path.name)
+                if ver_match:
+                    version = f" {ver_match.group(1)}"
+            result.append(f"{ssl_name}{version}")
+
+        return ", ".join(result) if result else "Unknown"
 
     def _detect_crypto_library(self) -> str:
         """Detect cryptographic libraries."""
@@ -565,9 +606,29 @@ class FirmwareProfiler(BaseAnalyzer):
             for bin_name, display_name in web_servers.items():
                 if bin_name == name or name.startswith(bin_name):
                     version = self._extract_version(binary_path)
-                    if version != "Unknown":
-                        return f"{display_name} {version}"
-                    return display_name
+                    label = f"{display_name} {version}" if version != "Unknown" else display_name
+
+                    # Check if statically compiled (no NEEDED entries) and count modules
+                    extra = []
+                    if "readelf" in self.tools:
+                        ret, dyn_out, _ = self._run_command(
+                            [self.tools["readelf"], "-W", "-d", str(binary_path)], timeout=10
+                        )
+                        if ret == 0 and "NEEDED" not in dyn_out:
+                            extra.append("statically compiled")
+
+                    if "strings" in self.tools:
+                        ret, str_out, _ = self._run_command(
+                            [self.tools["strings"], "-n", "4", str(binary_path)], timeout=10
+                        )
+                        if ret == 0:
+                            mod_count = len(re.findall(r'mod_\w+', str_out))
+                            if mod_count > 0:
+                                extra.append(f"{mod_count} modules")
+
+                    if extra:
+                        label = f"{label} ({', '.join(extra)})"
+                    return label
 
         return "None"
 
@@ -698,3 +759,173 @@ class FirmwareProfiler(BaseAnalyzer):
                 break
 
         return interesting[:30]
+
+    def _detect_platform(self, executables) -> str:
+        """Detect SoC/board platform from cpuinfo, device-tree, U-Boot env, or kernel strings."""
+        # 1. /proc/cpuinfo in extracted FS
+        cpuinfo_path = self.target / "proc" / "cpuinfo"
+        if cpuinfo_path.exists():
+            content = safe_read_file(cpuinfo_path)
+            if content:
+                hw_match = re.search(r'Hardware\s*:\s*(.+)', content)
+                model_match = re.search(r'Model\s*:\s*(.+)', content)
+                cpu_match = re.search(r'CPU part\s*:\s*(0x[0-9a-f]+)', content, re.IGNORECASE)
+                if hw_match or model_match:
+                    platform = (model_match or hw_match).group(1).strip()
+                    return platform
+
+        # 2. Device-tree compatible string
+        dt_compatible = self.target / "sys" / "firmware" / "devicetree" / "base" / "compatible"
+        if not dt_compatible.exists():
+            dt_compatible = self.target / "proc" / "device-tree" / "compatible"
+        if dt_compatible.exists():
+            try:
+                with open(dt_compatible, "rb") as f:
+                    compat = f.read(256).decode("utf-8", errors="replace").strip("\x00").split("\x00")
+                if compat:
+                    return compat[0].strip()
+            except (OSError, UnicodeDecodeError):
+                pass
+
+        # 3. U-Boot environment / fw_env.config
+        for env_file in ["etc/fw_env.config", "boot/uEnv.txt", "uEnv.txt"]:
+            env_path = self.target / env_file
+            if env_path.exists():
+                content = safe_read_file(env_path)
+                if content:
+                    board_match = re.search(r'(?:board|machine|platform)\s*[=:]\s*(\S+)', content, re.IGNORECASE)
+                    if board_match:
+                        return board_match.group(1).strip()
+
+        # 4. Known SoC markers from binary strings
+        soc_markers = [
+            (r'i\.MX8M?\s*(?:Mini|Nano|Plus|Quad)?', "NXP i.MX8M"),
+            (r'i\.MX6\w*', "NXP i.MX6"),
+            (r'Allwinner\s+[AH]\d+', "Allwinner"),
+            (r'Rockchip\s+RK\d+', "Rockchip"),
+            (r'Qualcomm\s+(?:SDM|MSM|APQ)\d+', "Qualcomm"),
+            (r'Broadcom\s+BCM\d+', "Broadcom"),
+            (r'MediaTek\s+MT\d+', "MediaTek"),
+            (r'Raspberry\s+Pi\s+\d+', "Raspberry Pi"),
+            (r'BeagleBone', "BeagleBone"),
+            (r'OMAP\d+', "TI OMAP"),
+            (r'AM\d{4}x?', "TI AM"),
+            (r'STM32\w+', "STMicro STM32"),
+            (r'ESP\d+', "Espressif ESP"),
+            (r'nRF\d+', "Nordic nRF"),
+        ]
+
+        # Search in small kernel/boot binaries first
+        for search_dir in ["boot", "lib/firmware"]:
+            search_path = self.target / search_dir
+            if not search_path.exists():
+                continue
+            for f in sorted(search_path.iterdir())[:5]:
+                if not f.is_file() or f.stat().st_size > 8 * 1024 * 1024:
+                    continue
+                if "strings" not in self.tools:
+                    continue
+                ret, out, _ = self._run_command(
+                    [self.tools["strings"], "-n", "6", str(f)], timeout=10
+                )
+                if ret == 0:
+                    for pattern, label in soc_markers:
+                        m = re.search(pattern, out, re.IGNORECASE)
+                        if m:
+                            return f"{label} ({m.group(0).strip()})"
+
+        return "Unknown"
+
+    def _detect_shells(self) -> str:
+        """Detect available shells (bash, dash, zsh, ash, etc.)."""
+        shell_names = ["bash", "dash", "zsh", "ksh", "ash", "sh", "fish", "tcsh", "csh"]
+        bin_dirs = ["bin", "sbin", "usr/bin", "usr/sbin", "usr/local/bin"]
+
+        found = []
+        for shell in shell_names:
+            for d in bin_dirs:
+                shell_path = self.target / d / shell
+                if shell_path.exists():
+                    if shell not in found:
+                        found.append(shell)
+                    break
+
+        # BusyBox provides a shell — label it clearly if present
+        has_busybox = any(
+            (self.target / d / "busybox").exists() for d in bin_dirs
+        )
+        if has_busybox and "busybox" not in found:
+            found.append("busybox")
+
+        # ash/sh via busybox symlink — avoid double-counting plain "sh"
+        if has_busybox and "sh" in found and "ash" not in found:
+            found.remove("sh")
+
+        return " + ".join(found) if found else "Unknown"
+
+    def _detect_runtime(self, binaries) -> str:
+        """Detect language runtimes (Mono/.NET, Python, Java, Node.js, Ruby, Lua)."""
+        runtimes = []
+
+        runtime_bins = {
+            "Mono/.NET": ["mono", "mono-runtime", "dotnet", "mcs"],
+            "Java": ["java", "dalvikvm", "art"],
+            "Python": ["python", "python2", "python3"],
+            "Node.js": ["node", "nodejs"],
+            "Ruby": ["ruby"],
+            "Lua": ["lua", "lua5.1", "lua5.2", "lua5.3", "lua5.4"],
+            "Perl": ["perl"],
+            "PHP": ["php", "php-cgi", "php-fpm"],
+        }
+
+        bin_dirs = ["bin", "sbin", "usr/bin", "usr/sbin", "usr/local/bin"]
+
+        for runtime_name, bin_names in runtime_bins.items():
+            for bin_name in bin_names:
+                for d in bin_dirs:
+                    rt_path = self.target / d / bin_name
+                    if rt_path.exists():
+                        # Try to get version
+                        version = ""
+                        if "strings" in self.tools:
+                            ret, out, _ = self._run_command(
+                                [self.tools["strings"], "-n", "4", str(rt_path)], timeout=8
+                            )
+                            if ret == 0 and out:
+                                # Generic version pattern
+                                ver_m = re.search(
+                                    r'(?:version|v)\s*([\d]+\.[\d]+\.?[\d]*)',
+                                    out, re.IGNORECASE
+                                )
+                                if not ver_m:
+                                    ver_m = re.search(r'\b([\d]+\.[\d]+\.[\d]+)\b', out)
+                                if ver_m:
+                                    version = f" {ver_m.group(1)}"
+                        label = f"{runtime_name}{version}"
+                        if label not in runtimes:
+                            runtimes.append(label)
+                        break
+                else:
+                    continue
+                break
+
+        # Also check for Mono assemblies (.dll, .exe with ECMA CLI header)
+        if "Mono/.NET" not in [r.split()[0] for r in runtimes]:
+            for root, dirs, files in os.walk(self.target):
+                for f in files:
+                    if f.lower().endswith((".exe", ".dll")):
+                        filepath = Path(root) / f
+                        try:
+                            with open(filepath, "rb") as fh:
+                                header = fh.read(4)
+                            if header[:2] == b"MZ":  # PE header — .NET/Mono binary
+                                runtimes.insert(0, "Mono/.NET")
+                                break
+                        except (OSError, PermissionError):
+                            pass
+                else:
+                    dirs[:] = dirs[:20]
+                    continue
+                break
+
+        return ", ".join(runtimes) if runtimes else "None"
