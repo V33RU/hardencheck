@@ -106,6 +106,18 @@ class FirmwareProfiler(BaseAnalyzer):
                     break
                 dirs[:] = dirs[:20]
 
+        # Enrich fw_type with init system if both BusyBox and systemd coexist
+        if profile.fw_type in ("BusyBox-based", "Unknown"):
+            has_systemd = (
+                (self.target / "lib" / "systemd").exists()
+                or (self.target / "usr" / "lib" / "systemd").exists()
+                or (self.target / "etc" / "systemd").exists()
+            )
+            if has_systemd and "BusyBox" in profile.fw_type:
+                profile.fw_type = "Linux (BusyBox + systemd)"
+            elif has_systemd and profile.fw_type == "Unknown":
+                profile.fw_type = "Linux (systemd)"
+
         for root, dirs, files in os.walk(self.target):
             for filename in files:
                 name_lower = filename.lower()
@@ -126,15 +138,35 @@ class FirmwareProfiler(BaseAnalyzer):
                 break
             dirs[:] = dirs[:10]
 
-        for root, dirs, files in os.walk(self.target):
-            if "modules" in root:
-                for dirname in dirs:
-                    if re.match(r"^\d+\.\d+\.\d+", dirname):
-                        profile.kernel = dirname
+        # 1. /proc/version (most accurate when present in extracted fs)
+        proc_version = self.target / "proc" / "version"
+        if proc_version.exists():
+            content = safe_read_file(proc_version)
+            if content:
+                m = re.search(r'Linux version\s+([\w.\-+]+)', content)
+                if m:
+                    profile.kernel = m.group(1)
+
+        # 2. lib/modules/<version>/ directory name
+        if profile.kernel == "Unknown":
+            modules_path = self.target / "lib" / "modules"
+            if modules_path.exists():
+                for entry in sorted(modules_path.iterdir()):
+                    if entry.is_dir() and re.match(r"^\d+\.\d+\.\d+", entry.name):
+                        profile.kernel = entry.name
                         break
-            if profile.kernel != "Unknown":
-                break
-            dirs[:] = dirs[:20]
+
+        # 3. Fallback: walk for modules dirs
+        if profile.kernel == "Unknown":
+            for root, dirs, files in os.walk(self.target):
+                if "modules" in root:
+                    for dirname in dirs:
+                        if re.match(r"^\d+\.\d+\.\d+", dirname):
+                            profile.kernel = dirname
+                            break
+                if profile.kernel != "Unknown":
+                    break
+                dirs[:] = dirs[:20]
 
         profile.filesystem = self._detect_filesystem()
         profile.compression = self._detect_compression()
@@ -364,8 +396,18 @@ class FirmwareProfiler(BaseAnalyzer):
 
     def _detect_init_system(self) -> str:
         """Detect init system type."""
-        if (self.target / "lib" / "systemd").exists() or (self.target / "etc" / "systemd").exists():
+        if (
+            (self.target / "lib" / "systemd").exists()
+            or (self.target / "usr" / "lib" / "systemd").exists()
+            or (self.target / "etc" / "systemd").exists()
+            or (self.target / "usr" / "lib" / "systemd" / "systemd").exists()
+        ):
             return "systemd"
+
+        # systemctl binary presence is a reliable indicator
+        for d in ["bin", "sbin", "usr/bin", "usr/sbin"]:
+            if (self.target / d / "systemctl").exists():
+                return "systemd"
 
         if (self.target / "sbin" / "procd").exists():
             return "procd (OpenWrt)"
@@ -676,8 +718,7 @@ class FirmwareProfiler(BaseAnalyzer):
         return "None"
 
     def _count_busybox_applets(self) -> int:
-        """Count BusyBox applets (symlinks to busybox)."""
-        count = 0
+        """Count BusyBox applets via symlinks or busybox --list."""
         busybox_paths = [
             self.target / "bin" / "busybox",
             self.target / "sbin" / "busybox",
@@ -685,10 +726,27 @@ class FirmwareProfiler(BaseAnalyzer):
             self.target / "usr" / "sbin" / "busybox",
         ]
 
-        busybox_exists = any(p.exists() for p in busybox_paths)
-        if not busybox_exists:
+        busybox_bin = next((p for p in busybox_paths if p.exists()), None)
+        if not busybox_bin:
             return 0
 
+        # Try to run busybox --list to get the authoritative count
+        if "busybox" in self.tools or True:
+            try:
+                import subprocess
+                ret = subprocess.run(
+                    [str(busybox_bin), "--list"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if ret.returncode == 0 and ret.stdout.strip():
+                    lines = [l.strip() for l in ret.stdout.strip().splitlines() if l.strip()]
+                    if lines:
+                        return len(lines)
+            except Exception:
+                pass
+
+        # Fallback: count symlinks pointing to busybox in standard dirs
+        count = 0
         for search_dir in ["bin", "sbin", "usr/bin", "usr/sbin"]:
             dir_path = self.target / search_dir
             if not dir_path.exists():
@@ -699,6 +757,14 @@ class FirmwareProfiler(BaseAnalyzer):
                         try:
                             link_target = os.readlink(item)
                             if "busybox" in link_target.lower():
+                                count += 1
+                        except (OSError, PermissionError):
+                            pass
+                    elif item.is_file() and item.stat().st_size < 200:
+                        # Tiny wrapper scripts pointing to busybox
+                        try:
+                            content = item.read_text(errors="ignore")
+                            if "busybox" in content.lower():
                                 count += 1
                         except (OSError, PermissionError):
                             pass
@@ -799,7 +865,8 @@ class FirmwareProfiler(BaseAnalyzer):
 
         # 4. Known SoC markers from binary strings
         soc_markers = [
-            (r'i\.MX8M?\s*(?:Mini|Nano|Plus|Quad)?', "NXP i.MX8M"),
+            (r'i\.MX8M\s*(?:Mini|Nano|Plus|Quad)?', "NXP i.MX8M"),
+            (r'i\.MX8(?!\w)', "NXP i.MX8"),
             (r'i\.MX6\w*', "NXP i.MX6"),
             (r'Allwinner\s+[AH]\d+', "Allwinner"),
             (r'Rockchip\s+RK\d+', "Rockchip"),
@@ -815,16 +882,45 @@ class FirmwareProfiler(BaseAnalyzer):
             (r'nRF\d+', "Nordic nRF"),
         ]
 
-        # Search in small kernel/boot binaries first
-        for search_dir in ["boot", "lib/firmware"]:
-            search_path = self.target / search_dir
-            if not search_path.exists():
+        # Also check DTB files (device tree blobs) — contain the machine compatible string in text
+        for dtb_dir in ["boot", "boot/dtbs", "usr/lib/linux-image-*/", "lib/firmware"]:
+            dtb_path = self.target / dtb_dir
+            if not dtb_path.exists():
                 continue
-            for f in sorted(search_path.iterdir())[:5]:
-                if not f.is_file() or f.stat().st_size > 8 * 1024 * 1024:
+            for f in sorted(dtb_path.rglob("*.dtb"))[:5]:
+                if not f.is_file() or f.stat().st_size > 2 * 1024 * 1024:
                     continue
                 if "strings" not in self.tools:
                     continue
+                ret, out, _ = self._run_command(
+                    [self.tools["strings"], "-n", "4", str(f)], timeout=8
+                )
+                if ret == 0:
+                    for pattern, label in soc_markers:
+                        m = re.search(pattern, out, re.IGNORECASE)
+                        if m:
+                            return f"{label} ({m.group(0).strip()})"
+
+        # Search in boot, lib/firmware, and also lib/modules kernel image
+        search_dirs = ["boot", "lib/firmware"]
+        # Add kernel module directories — kernel strings often name the SoC
+        for kmod_dir in (self.target / "lib" / "modules").iterdir() if (self.target / "lib" / "modules").exists() else []:
+            if kmod_dir.is_dir():
+                search_dirs.append(str(kmod_dir.relative_to(self.target)))
+                break  # Just first kernel version dir
+
+        if "strings" not in self.tools:
+            return "Unknown"
+
+        for search_dir in search_dirs:
+            search_path = self.target / search_dir
+            if not search_path.exists():
+                continue
+            candidates = sorted(
+                (f for f in search_path.iterdir() if f.is_file() and f.stat().st_size <= 16 * 1024 * 1024),
+                key=lambda f: f.stat().st_size
+            )[:8]
+            for f in candidates:
                 ret, out, _ = self._run_command(
                     [self.tools["strings"], "-n", "6", str(f)], timeout=10
                 )
@@ -834,12 +930,23 @@ class FirmwareProfiler(BaseAnalyzer):
                         if m:
                             return f"{label} ({m.group(0).strip()})"
 
+        # 5. Check /etc/hostname or /etc/machine-info for board name hints
+        for hint_file in ["etc/hostname", "etc/machine-info", "etc/board"]:
+            hint_path = self.target / hint_file
+            if hint_path.exists():
+                content = safe_read_file(hint_path)
+                if content:
+                    for pattern, label in soc_markers:
+                        m = re.search(pattern, content, re.IGNORECASE)
+                        if m:
+                            return f"{label} ({m.group(0).strip()})"
+
         return "Unknown"
 
     def _detect_shells(self) -> str:
         """Detect available shells (bash, dash, zsh, ash, etc.)."""
         shell_names = ["bash", "dash", "zsh", "ksh", "ash", "sh", "fish", "tcsh", "csh"]
-        bin_dirs = ["bin", "sbin", "usr/bin", "usr/sbin", "usr/local/bin"]
+        bin_dirs = ["bin", "sbin", "usr/bin", "usr/sbin", "usr/local/bin", "usr/local/sbin"]
 
         found = []
         for shell in shell_names:
@@ -849,6 +956,19 @@ class FirmwareProfiler(BaseAnalyzer):
                     if shell not in found:
                         found.append(shell)
                     break
+
+        # Also parse /etc/shells — authoritative list of valid login shells
+        etc_shells = self.target / "etc" / "shells"
+        if etc_shells.exists():
+            content = safe_read_file(etc_shells)
+            if content:
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    shell_bin = Path(line).name.lower()
+                    if shell_bin and shell_bin not in found and shell_bin not in ("nologin", "false", "true"):
+                        found.append(shell_bin)
 
         # BusyBox provides a shell — label it clearly if present
         has_busybox = any(
