@@ -21,8 +21,8 @@ die()   { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 echo -e "${BOLD}"
 cat <<'EOF'
     ╔════════════════════════════════════════╗
-    ║   H A R D E N C H E C K  Installer    ║
-    ║   Firmware Security Analyzer v1.0     ║
+    ║   H A R D E N C H E C K  Installer     ║
+    ║   Firmware Security Analyzer v1.0      ║
     ╚════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
