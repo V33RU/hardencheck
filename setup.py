@@ -10,9 +10,9 @@ Usage
   # Development / editable install:
   pip install -e .
 
-  # Full install including system tool dependencies:
+  # Install system tool dependencies then the package:
   python setup.py install_system_deps
-  pip install .
+  pip install .   # or: pip install --break-system-packages .
 
 System tools required (installed automatically by install.sh):
   readelf / eu-readelf  — ELF binary inspection
