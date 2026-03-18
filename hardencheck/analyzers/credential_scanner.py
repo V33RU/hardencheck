@@ -99,7 +99,7 @@ class CredentialScanner(BaseAnalyzer):
                             json_match = re.search(r'"Password"\s*:\s*"([^"]*)"', line)
                             if json_match:
                                 json_value = json_match.group(1).lower()
-                                if json_value not in WEAK_PASSWORDS or len(json_value) > 20:
+                                if json_value not in WEAK_PASSWORDS:
                                     continue
                                 if json_value in {"", "false", "true", "set", "get not supported"}:
                                     continue
@@ -153,10 +153,11 @@ class CredentialScanner(BaseAnalyzer):
         if re.match(r"^\{\{\s*\w+\s*\}\}$", value):
             return True
 
-        if len(set(value)) <= 2 and len(value) >= 3:
+        if len(set(value)) <= 1 and len(value) >= 3:
             return True
 
-        if re.match(r"^[a-z_]+$", value) and len(value) < 20:
+        if re.match(r"^[a-z][a-z0-9]*_[a-z][a-z0-9_]*$", value) and len(value) < 30:
+            # Looks like a variable/env-var name (snake_case), not a credential value
             return True
 
         if len(value) >= 4:
@@ -170,7 +171,8 @@ class CredentialScanner(BaseAnalyzer):
         if re.match(r"^https?://", value_lower):
             return True
 
-        if value.isdigit():
+        if value.isdigit() and len(value) <= 4:
+            # Very short numeric strings (e.g. "0", "42") are not meaningful credentials
             return True
 
         if len(value) < 4:
