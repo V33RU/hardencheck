@@ -2,6 +2,9 @@
 # =============================================================================
 #  HardenCheck — Full Installer
 #  Supported: macOS | Ubuntu 24.04 | Debian 12 | Arch Linux / Manjaro
+#
+#  No venv needed — HardenCheck has zero pip dependencies (pure stdlib).
+#  This script installs system tools then registers the `hardencheck` command.
 # =============================================================================
 set -euo pipefail
 
@@ -18,8 +21,8 @@ die()   { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 echo -e "${BOLD}"
 cat <<'EOF'
     ╔════════════════════════════════════════╗
-    ║   H A R D E N C H E C K  Installer     ║
-    ║   Firmware Security Analyzer v1.0      ║
+    ║   H A R D E N C H E C K  Installer    ║
+    ║   Firmware Security Analyzer v1.0     ║
     ╚════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
@@ -27,19 +30,16 @@ echo -e "${NC}"
 # ── parse flags ──────────────────────────────────────────────────────────────
 DRY_RUN=0
 EDITABLE=0
-NO_VENV=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dry-run)   DRY_RUN=1 ;;
+        --dry-run)     DRY_RUN=1 ;;
         --editable|-e) EDITABLE=1 ;;
-        --no-venv)   NO_VENV=1 ;;
         --help|-h)
-            echo "Usage: $0 [--dry-run] [--editable|-e] [--no-venv]"
+            echo "Usage: $0 [--dry-run] [--editable|-e]"
             echo
             echo "  --dry-run     Print commands without executing them"
-            echo "  --editable    Install Python package in editable mode (pip install -e .)"
-            echo "  --no-venv     Skip venv creation, install system-wide"
+            echo "  --editable    pip install -e . (useful for development)"
             exit 0 ;;
         *) warn "Unknown flag: $1" ;;
     esac
@@ -51,50 +51,43 @@ run() {
     [[ $DRY_RUN -eq 0 ]] && eval "$@"
 }
 
-# ── detect OS ────────────────────────────────────────────────────────────────
-OS="$(uname -s)"
-DISTRO="unknown"
-
-if [[ "$OS" == "Linux" ]]; then
-    if [[ -f /etc/os-release ]]; then
-        source /etc/os-release
-        ID_LOWER="${ID,,}"
-        ID_LIKE_LOWER="${ID_LIKE:-}"
-        if [[ "$ID_LOWER" == "ubuntu" || "$ID_LOWER" == "debian" || "$ID_LIKE_LOWER" == *"debian"* ]]; then
-            DISTRO="debian"
-        elif [[ "$ID_LOWER" == "arch" || "$ID_LOWER" == "manjaro" || "$ID_LOWER" == "endeavouros" || "$ID_LIKE_LOWER" == *"arch"* ]]; then
-            DISTRO="arch"
-        fi
-    fi
-    # Fallback by package manager
-    if [[ "$DISTRO" == "unknown" ]]; then
-        command -v apt-get &>/dev/null && DISTRO="debian"
-        command -v pacman  &>/dev/null && DISTRO="arch"
-    fi
-elif [[ "$OS" == "Darwin" ]]; then
-    DISTRO="macos"
-fi
-
-info "Detected platform: ${BOLD}${OS}${NC} / ${BOLD}${DISTRO}${NC}"
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 have() { command -v "$1" &>/dev/null; }
 
 require_python() {
-    local py=""
     for candidate in python3.12 python3.11 python3.10 python3.9 python3 python; do
         if have "$candidate"; then
-            local ver
-            ver=$("$candidate" -c 'import sys; print(sys.version_info[:2])')
             if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)' 2>/dev/null; then
-                py="$candidate"
-                break
+                echo "$candidate"
+                return
             fi
         fi
     done
-    [[ -z "$py" ]] && die "Python 3.9+ not found. Please install it first."
-    echo "$py"
+    die "Python 3.9+ not found. Please install it first."
 }
+
+# ── detect OS ────────────────────────────────────────────────────────────────
+OS="$(uname -s)"
+DISTRO="unknown"
+
+if [[ "$OS" == "Linux" && -f /etc/os-release ]]; then
+    source /etc/os-release
+    ID_LOWER="${ID,,}"
+    ID_LIKE_LOWER="${ID_LIKE:-}"
+    if [[ "$ID_LOWER" == "ubuntu" || "$ID_LOWER" == "debian" || "$ID_LIKE_LOWER" == *"debian"* ]]; then
+        DISTRO="debian"
+    elif [[ "$ID_LOWER" == "arch" || "$ID_LOWER" == "manjaro" || "$ID_LOWER" == "endeavouros" || "$ID_LIKE_LOWER" == *"arch"* ]]; then
+        DISTRO="arch"
+    fi
+fi
+# Fallback by package manager
+if [[ "$DISTRO" == "unknown" && "$OS" == "Linux" ]]; then
+    have apt-get && DISTRO="debian"
+    have pacman  && DISTRO="arch"
+fi
+[[ "$OS" == "Darwin" ]] && DISTRO="macos"
+
+info "Detected platform: ${BOLD}${OS}${NC} / ${BOLD}${DISTRO}${NC}"
 
 # =============================================================================
 #  1. SYSTEM TOOLS
@@ -112,9 +105,7 @@ install_debian() {
         devscripts \
         radare2 \
         python3 \
-        python3-pip \
-        python3-venv"
-
+        python3-pip"
     ok "apt-get install complete."
 }
 
@@ -137,16 +128,14 @@ install_arch() {
         info "Installing hardening-check from AUR via ${aur_helper} ..."
         run "$aur_helper -S --noconfirm hardening-check"
     else
-        warn "No AUR helper (yay/paru) found. Skipping hardening-check (optional)."
-        warn "Install later: yay -S hardening-check"
+        warn "No AUR helper found. Skipping hardening-check (optional)."
+        warn "Install later with: yay -S hardening-check"
     fi
-
     ok "pacman install complete."
 }
 
 install_macos() {
     info "Installing system tools via Homebrew (macOS) ..."
-
     if ! have brew; then
         die "Homebrew not found. Install it first:
   /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
@@ -155,28 +144,22 @@ install_macos() {
     run "brew update --quiet"
     run "brew install binutils openssl radare2"
 
-    # pax-utils (scanelf) and hardening-check are Linux-only
     warn "scanelf (pax-utils) and hardening-check are Linux-only — skipped on macOS."
-    warn "HardenCheck still runs; those checks are simply reported as unavailable."
 
-    # GNU binutils installs as greadelf / gstrings — create unversioned symlinks
+    # GNU binutils installs as greadelf/gstrings — symlink to plain names
     local brew_prefix
     brew_prefix="$(brew --prefix)"
     local gnu_bin="${brew_prefix}/opt/binutils/bin"
     local link_dir="${brew_prefix}/bin"
 
     for pair in "greadelf readelf" "gstrings strings" "gobjdump objdump"; do
-        local src_name dst_name
-        src_name="${pair%% *}"
-        dst_name="${pair##* }"
-        local src="${gnu_bin}/${src_name}"
-        local dst="${link_dir}/${dst_name}"
+        local src_name="${pair%% *}" dst_name="${pair##* }"
+        local src="${gnu_bin}/${src_name}" dst="${link_dir}/${dst_name}"
         if [[ -f "$src" && ! -e "$dst" ]]; then
             info "Symlinking ${src_name} → ${dst_name}"
             run "ln -sf \"$src\" \"$dst\""
         fi
     done
-
     ok "Homebrew install complete."
 }
 
@@ -185,55 +168,35 @@ case "$DISTRO" in
     arch)   install_arch   ;;
     macos)  install_macos  ;;
     *)
-        warn "Unrecognised distro/OS. Skipping system tool installation."
+        warn "Unrecognised distro. Skipping system tool install."
         warn "Please install manually: binutils elfutils file openssl pax-utils radare2"
         ;;
 esac
 
 # =============================================================================
-#  2. PYTHON ENVIRONMENT + PACKAGE
+#  2. INSTALL PYTHON PACKAGE  (no venv — pure stdlib, nothing to isolate)
 # =============================================================================
 
 PYTHON=$(require_python)
-info "Using Python: $(which $PYTHON) ($(${PYTHON} --version))"
-
-# Locate the project root (directory containing this script)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+info "Using Python: $("$PYTHON" --version) at $(command -v $PYTHON)"
 info "Project root: ${SCRIPT_DIR}"
 
-if [[ $NO_VENV -eq 0 ]]; then
-    VENV_DIR="${SCRIPT_DIR}/.venv"
-    if [[ ! -d "$VENV_DIR" ]]; then
-        info "Creating virtual environment at ${VENV_DIR} ..."
-        run "${PYTHON} -m venv \"${VENV_DIR}\""
-    else
-        info "Virtual environment already exists at ${VENV_DIR}."
-    fi
+PIP_FLAGS="--quiet"
+# Ubuntu/Debian 24.04+ enforce PEP 668 (externally-managed-environment).
+# --break-system-packages lets pip install into the system site-packages,
+# which is safe here because we have no third-party deps to conflict with.
+if "$PYTHON" -m pip install --help 2>&1 | grep -q "break-system-packages"; then
+    PIP_FLAGS="$PIP_FLAGS --break-system-packages"
+fi
 
-    # Activate
-    VENV_PYTHON="${VENV_DIR}/bin/python"
-    VENV_PIP="${VENV_DIR}/bin/pip"
-
-    info "Upgrading pip inside venv ..."
-    run "\"${VENV_PYTHON}\" -m pip install --quiet --upgrade pip"
-
-    if [[ $EDITABLE -eq 1 ]]; then
-        info "Installing HardenCheck in editable mode ..."
-        run "\"${VENV_PIP}\" install --quiet -e \"${SCRIPT_DIR}\""
-    else
-        info "Installing HardenCheck ..."
-        run "\"${VENV_PIP}\" install --quiet \"${SCRIPT_DIR}\""
-    fi
-
-    HARDEN_BIN="${VENV_DIR}/bin/hardencheck"
+if [[ $EDITABLE -eq 1 ]]; then
+    info "Installing HardenCheck in editable mode ..."
+    run "\"$PYTHON\" -m pip install $PIP_FLAGS -e \"${SCRIPT_DIR}\""
 else
-    warn "--no-venv: installing into the system Python environment."
-    if [[ $EDITABLE -eq 1 ]]; then
-        run "${PYTHON} -m pip install --quiet -e \"${SCRIPT_DIR}\""
-    else
-        run "${PYTHON} -m pip install --quiet \"${SCRIPT_DIR}\""
-    fi
-    HARDEN_BIN="$(command -v hardencheck 2>/dev/null || echo 'hardencheck')"
+    info "Installing HardenCheck ..."
+    run "\"$PYTHON\" -m pip install $PIP_FLAGS \"${SCRIPT_DIR}\""
 fi
 
 # =============================================================================
@@ -291,13 +254,6 @@ else
     warn "Some required tools are missing — see above."
 fi
 
-if [[ $NO_VENV -eq 0 ]]; then
-    echo
-    echo -e "${BOLD}To use HardenCheck:${NC}"
-    echo -e "  Activate venv:   ${CYAN}source ${SCRIPT_DIR}/.venv/bin/activate${NC}"
-    echo -e "  Run directly:    ${CYAN}${HARDEN_BIN} /path/to/firmware${NC}"
-else
-    echo
-    echo -e "${BOLD}Run:${NC}  ${CYAN}hardencheck /path/to/firmware${NC}"
-fi
+echo
+echo -e "${BOLD}Run:${NC}  ${CYAN}hardencheck /path/to/extracted-firmware${NC}"
 echo
