@@ -749,8 +749,9 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 </div>
 <div class="card-body collapsed" id="profile">
 <div class="profile">
+<div class="profile-row"><span class="profile-label">Platform</span><span>{profile.platform}</span></div>
 <div class="profile-row"><span class="profile-label">Type</span><span>{profile.fw_type}</span></div>
-<div class="profile-row"><span class="profile-label">Architecture</span><span>{profile.arch}{f" {profile.bits}-bit" if profile.bits != "Unknown" else ""}</span></div>
+<div class="profile-row"><span class="profile-label">Architecture</span><span>{profile.arch}{f" {profile.bits}-bit" if profile.bits != "Unknown" else ""}{f" {profile.abi}" if profile.abi else ""}</span></div>
 <div class="profile-row"><span class="profile-label">Endianness</span><span>{profile.endian}</span></div>
 <div class="profile-row"><span class="profile-label">Libc</span><span>{profile.libc}</span></div>
 <div class="profile-row"><span class="profile-label">Kernel</span><span>{profile.kernel}</span></div>
@@ -758,6 +759,8 @@ td{padding:6px;border-bottom:1px solid var(--bd)}
 <div class="profile-row"><span class="profile-label">Compression</span><span>{profile.compression}</span></div>
 <div class="profile-row"><span class="profile-label">Bootloader</span><span>{profile.bootloader}</span></div>
 <div class="profile-row"><span class="profile-label">Init System</span><span>{profile.init_system}</span></div>
+<div class="profile-row"><span class="profile-label">Shell</span><span>{profile.shells}</span></div>
+<div class="profile-row"><span class="profile-label">Runtime</span><span>{profile.runtime}</span></div>
 <div class="profile-row"><span class="profile-label">Package Manager</span><span>{profile.package_manager}</span></div>
 <div class="profile-row"><span class="profile-label">SSL/TLS Library</span><span>{profile.ssl_library}</span></div>
 <div class="profile-row"><span class="profile-label">Crypto Library</span><span>{profile.crypto_library}</span></div>
