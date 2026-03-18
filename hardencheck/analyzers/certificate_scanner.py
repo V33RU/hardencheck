@@ -94,14 +94,8 @@ class CertificateScanner(BaseAnalyzer):
                     findings.append(CertificateFinding(
                         file=rel_path,
                         file_type="PKCS12 Bundle",
-                        issue="PKCS12 bundle (may contain private key)",
+                        issue="PKCS12 bundle found (may contain private key — verify manually)",
                         severity=Severity.MEDIUM
-                    ))
-                    findings.append(CertificateFinding(
-                        file=rel_path,
-                        file_type="PKCS12 Bundle",
-                        issue="PKCS12 bundle with private key",
-                        severity=Severity.HIGH
                     ))
 
         return findings[:50]
