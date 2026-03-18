@@ -200,7 +200,8 @@ class PQCReadinessAnalyzer(BaseAnalyzer):
                 parts2.append(0)
             return parts1 < parts2
         except (ValueError, AttributeError):
-            return True
+            # Cannot parse version — do not assume it is older/vulnerable
+            return False
 
     def _build_summary(self, findings):
         """Build summary counters."""
