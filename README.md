@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/v33ru/hardencheck">
-    <img src="https://img.shields.io/badge/version-1.0-blue.svg" />
+    <img src="https://img.shields.io/badge/version-1.1-blue.svg" />
   </a>
   <a href="https://www.python.org/">
     <img src="https://img.shields.io/badge/python-3.7+-green.svg" />
