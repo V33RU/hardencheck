@@ -11,12 +11,13 @@ from hardencheck.reports.text_report import generate_text_summary
 from hardencheck.reports.csv_report import generate_csv_summary
 from hardencheck.reports.cyclonedx_sbom import generate_cyclonedx_sbom
 from hardencheck.reports.spdx_sbom import generate_spdx_sbom
+from hardencheck.reports.sarif_report import generate_sarif_report
 
 
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="HardenCheck v1.0 - Firmware Binary Security Analyzer with ASLR Entropy Analysis & SBOM",
+        description=f"HardenCheck v{VERSION} - Firmware Binary Security Analyzer with ASLR Entropy Analysis & SBOM",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -52,6 +53,14 @@ Scoring Model:
                         help="Enable extended checks (Stack Clash, CFI) - requires hardening-check tool")
     parser.add_argument("--sbom", choices=["cyclonedx", "spdx", "all"], default=None,
                         help="Generate SBOM: cyclonedx (CycloneDX 1.5), spdx (SPDX 2.3), or all")
+    parser.add_argument("--sarif", action="store_true",
+                        help="Also generate SARIF 2.1.0 report for GitHub code-scanning")
+    parser.add_argument("--only", action="append", metavar="STEP", default=None,
+                        help="Only run listed analyzer steps (repeatable). Steps: daemons, dependencies, "
+                             "banned-functions, credentials, certificates, config, aslr, sbom, cve, crypto, "
+                             "signing, service-privileges, kernel, update, security-tests, pqc")
+    parser.add_argument("--skip", action="append", metavar="STEP", default=None,
+                        help="Skip listed analyzer steps (repeatable). See --only for valid step names.")
     parser.add_argument("--summary", choices=["text", "csv"], default=None,
                         help="Generate a plain-text or CSV summary of binary hardening results")
     parser.add_argument("--fail-on-grade", choices=["A", "B", "C", "D", "F"], metavar="GRADE", default=None,
@@ -97,6 +106,8 @@ Scoring Model:
             skip_cve_lookup=args.skip_cve_lookup,
             cve_cache_enabled=not args.no_cve_cache,
             cve_cache_dir=Path(args.cve_cache_dir) if args.cve_cache_dir else None,
+            only_steps=args.only,
+            skip_steps=args.skip,
         )
         result = scanner.scan()
 
@@ -108,6 +119,11 @@ Scoring Model:
             json_path = output_path.with_suffix(".json")
             generate_json_report(result, json_path)
             print(f"[+] JSON Report: {json_path}")
+
+        if args.sarif:
+            sarif_path = output_path.with_suffix(".sarif")
+            generate_sarif_report(result, sarif_path)
+            print(f"[+] SARIF Report: {sarif_path}")
 
         # Summary outputs for CI / quick inspection
         if args.summary:
