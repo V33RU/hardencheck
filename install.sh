@@ -22,7 +22,7 @@ echo -e "${BOLD}"
 cat <<'EOF'
     ╔════════════════════════════════════════╗
     ║   H A R D E N C H E C K  Installer     ║
-    ║   Firmware Security Analyzer v1.0      ║
+    ║   Firmware Security Analyzer v1.1      ║
     ╚════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
@@ -111,6 +111,7 @@ install_debian() {
 
 install_arch() {
     info "Installing system tools via pacman (Arch Linux / Manjaro) ..."
+    # Note: Arch's `python` package ships pip; no separate python-pip needed.
     run "sudo pacman -Sy --noconfirm \
         binutils \
         elfutils \
@@ -118,8 +119,7 @@ install_arch() {
         pax-utils \
         openssl \
         radare2 \
-        python \
-        python-pip"
+        python"
 
     # hardening-check is in AUR
     if have yay || have paru; then
@@ -175,6 +175,10 @@ esac
 
 # =============================================================================
 #  2. INSTALL PYTHON PACKAGE  (no venv — pure stdlib, nothing to isolate)
+#
+#  HardenCheck has ZERO third-party Python dependencies (install_requires=[]).
+#  `pip` is used here ONLY to register the `hardencheck` console script and
+#  install this package onto the system. No PyPI packages are downloaded.
 # =============================================================================
 
 PYTHON=$(require_python)
