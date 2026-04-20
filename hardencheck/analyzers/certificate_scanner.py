@@ -129,17 +129,24 @@ class CertificateScanner(BaseAnalyzer):
                 if key_size < 2048:
                     issues.append(f"weak key ({key_size}-bit)")
 
+        sig_match = re.search(r"Signature Algorithm:\s*([A-Za-z0-9]+)", out)
+        if sig_match:
+            sig_alg = sig_match.group(1).lower()
+            if sig_alg.startswith("md5") or sig_alg.startswith("md2") or sig_alg.startswith("sha1"):
+                issues.append(f"weak signature ({sig_match.group(1)})")
+
         if "Not After :" in out:
             expiry_match = re.search(r"Not After :\s*(.+)", out)
             if expiry_match:
-                try:
-                    expiry_str = expiry_match.group(1).strip()
-                    year_match = re.search(r"\b(20\d{2})\b", expiry_str)
-                    if year_match:
-                        expiry_year = int(year_match.group(1))
-                        if expiry_year < datetime.now().year:
-                            issues.append("expired")
-                except (ValueError, AttributeError):
-                    pass
+                expiry_str = expiry_match.group(1).strip()
+                parsed = None
+                for fmt in ("%b %d %H:%M:%S %Y %Z", "%b %d %H:%M:%S %Y"):
+                    try:
+                        parsed = datetime.strptime(expiry_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+                if parsed and parsed < datetime.now():
+                    issues.append("expired")
 
         return ", ".join(issues) if issues else None
