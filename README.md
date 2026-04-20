@@ -142,12 +142,12 @@ hardencheck/
 │                    ADVANCED SECURITY CHECKS                               │
 │  ─────────────────────────────────────────                                │
 │  • Cryptographic Binary Analysis (purpose, flags, risk)                   │
-│  • Firmware Signing & Secure Boot Verification                           │
+│  • Firmware Signing & Secure Boot Verification                            │
 │  • Service Privilege & Isolation Audit                                    │
-│  • Kernel Hardening (KASLR, SMEP, SMAP, stack protector)                 │
-│  • OTA / Update Mechanism Security                                       │
-│  • Vulnerable Version Detection (CVE patterns)                           │
-│  • Default Credential Checks                                             │
+│  • Kernel Hardening (KASLR, SMEP, SMAP, stack protector)                  │
+│  • OTA / Update Mechanism Security                                        │
+│  • Vulnerable Version Detection (CVE patterns)                            │
+│  • Default Credential Checks                                              │
 ├───────────────────────────────────────────────────────────────────────────┤
 │                        SBOM GENERATION                                    │
 │  ─────────────────────────────────────────                                │
