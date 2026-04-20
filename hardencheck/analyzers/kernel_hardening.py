@@ -1,8 +1,24 @@
+import gzip
 from pathlib import Path
 
 from hardencheck.models import KernelHardeningInfo
 from hardencheck.core.base import BaseAnalyzer
 from hardencheck.core.utils import safe_read_file
+
+
+def _read_kernel_config(path: Path, max_size: int = 4 * 1024 * 1024):
+    """Read a kernel config file, transparently decompressing .gz."""
+    if path.suffix == ".gz" or path.name.endswith(".gz"):
+        try:
+            size = path.stat().st_size
+            if size > max_size:
+                return None
+            with gzip.open(path, "rb") as f:
+                data = f.read(max_size)
+            return data.decode("utf-8", errors="replace")
+        except (OSError, EOFError, gzip.BadGzipFile):
+            return None
+    return safe_read_file(path, max_size=max_size)
 
 
 class KernelHardeningAnalyzer(BaseAnalyzer):
@@ -25,14 +41,14 @@ class KernelHardeningAnalyzer(BaseAnalyzer):
             if "*" in config_pattern:
                 for path in self.target.glob(config_pattern):
                     if path.is_file():
-                        config_content = safe_read_file(path, max_size=2 * 1024 * 1024)
+                        config_content = _read_kernel_config(path)
                         if config_content:
                             config_source = str(path.relative_to(self.target))
                             break
             else:
                 full_path = self.target / config_pattern
                 if full_path.exists() and full_path.is_file():
-                    config_content = safe_read_file(full_path, max_size=2 * 1024 * 1024)
+                    config_content = _read_kernel_config(full_path)
                     if config_content:
                         config_source = config_pattern
                         break
