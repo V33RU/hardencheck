@@ -7,8 +7,12 @@ class ScanContext:
     """Shared state for all analyzers."""
 
     def __init__(self, target, threads=4, verbose=False, extended=False,
-                 include_patterns=None, exclude_patterns=None, quiet=False):
+                 include_patterns=None, exclude_patterns=None, quiet=False,
+                 extra_roots=None):
         self.target = Path(target).resolve()
+        self.extra_roots = [Path(p).resolve() for p in (extra_roots or [])]
+        # All roots, primary first. Used by multi-root aware analyzers.
+        self.roots: List[Path] = [self.target] + self.extra_roots
         self.threads = min(max(threads, 1), 16)
         self.verbose = verbose
         self.extended = extended
@@ -16,6 +20,21 @@ class ScanContext:
         self.exclude_patterns = exclude_patterns or []
         self.quiet = quiet
         self.tools = self._detect_tools()
+
+    def root_for(self, path: Path) -> Path:
+        """Return the root that contains `path` (longest prefix wins)."""
+        p = Path(path).resolve()
+        best = self.target
+        best_len = -1
+        for r in self.roots:
+            try:
+                p.relative_to(r)
+                if len(str(r)) > best_len:
+                    best = r
+                    best_len = len(str(r))
+            except ValueError:
+                continue
+        return best
 
     def _detect_tools(self) -> Dict[str, str]:
         """Detect available analysis tools."""
