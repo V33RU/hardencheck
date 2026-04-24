@@ -22,45 +22,48 @@ class FileDiscovery(BaseAnalyzer):
         config_names = {"passwd", "shadow", "hosts", "resolv.conf", "fstab", "inittab", "profile"}
         skip_dirs = {".git", ".svn", "__pycache__", "node_modules", ".cache"}
 
-        for root, dirs, files in os.walk(self.target):
-            dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
+        roots = getattr(self.ctx, "roots", [self.target])
 
-            for filename in files:
-                filepath = Path(root) / filename
+        for scan_root in roots:
+            for root, dirs, files in os.walk(scan_root):
+                dirs[:] = [d for d in dirs if d not in skip_dirs and not d.startswith(".")]
 
-                try:
-                    rel = filepath.relative_to(self.target).as_posix()
-                except ValueError:
-                    continue
-                if self.ctx.include_patterns and not any(fnmatch.fnmatch(rel, p) for p in self.ctx.include_patterns):
-                    continue
-                if self.ctx.exclude_patterns and any(fnmatch.fnmatch(rel, p) for p in self.ctx.exclude_patterns):
-                    continue
+                for filename in files:
+                    filepath = Path(root) / filename
 
-                try:
-                    if filepath.is_symlink():
-                        real_path = filepath.resolve()
-                        if not real_path.exists():
-                            continue
-                        stat_info = real_path.stat()
-                        inode = (stat_info.st_dev, stat_info.st_ino)
-                        if inode in seen_inodes:
-                            continue
-                        seen_inodes.add(inode)
-                except (OSError, PermissionError):
-                    continue
+                    try:
+                        rel = filepath.relative_to(scan_root).as_posix()
+                    except ValueError:
+                        continue
+                    if self.ctx.include_patterns and not any(fnmatch.fnmatch(rel, p) for p in self.ctx.include_patterns):
+                        continue
+                    if self.ctx.exclude_patterns and any(fnmatch.fnmatch(rel, p) for p in self.ctx.exclude_patterns):
+                        continue
 
-                if self._is_elf_file(filepath):
-                    binary_type = self._get_elf_type(filepath)
-                    binaries.append((filepath, binary_type))
-                    continue
+                    try:
+                        if filepath.is_symlink():
+                            real_path = filepath.resolve()
+                            if not real_path.exists():
+                                continue
+                            stat_info = real_path.stat()
+                            inode = (stat_info.st_dev, stat_info.st_ino)
+                            if inode in seen_inodes:
+                                continue
+                            seen_inodes.add(inode)
+                    except (OSError, PermissionError):
+                        continue
 
-                suffix = filepath.suffix.lower()
-                if suffix in source_extensions:
-                    sources.append(filepath)
-                    continue
+                    if self._is_elf_file(filepath):
+                        binary_type = self._get_elf_type(filepath)
+                        binaries.append((filepath, binary_type))
+                        continue
 
-                if suffix in config_extensions or filename in config_names:
-                    configs.append(filepath)
+                    suffix = filepath.suffix.lower()
+                    if suffix in source_extensions:
+                        sources.append(filepath)
+                        continue
+
+                    if suffix in config_extensions or filename in config_names:
+                        configs.append(filepath)
 
         return binaries, sources, configs
