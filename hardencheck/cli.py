@@ -12,6 +12,7 @@ from hardencheck.reports.csv_report import generate_csv_summary
 from hardencheck.reports.cyclonedx_sbom import generate_cyclonedx_sbom
 from hardencheck.reports.spdx_sbom import generate_spdx_sbom
 from hardencheck.reports.sarif_report import generate_sarif_report
+from hardencheck.reports.vex import generate_vex_report
 
 
 def main():
@@ -38,7 +39,9 @@ Scoring Model:
         """
     )
 
-    parser.add_argument("target", help="Firmware directory to scan")
+    parser.add_argument("target", nargs="+",
+                        help="Firmware directory to scan. Pass multiple paths to scan a multi-partition image "
+                             "(e.g. boot + rootfs + data) in one run.")
     parser.add_argument("-o", "--output", default="hardencheck_report.html",
                         help="Output HTML report path (default: hardencheck_report.html)")
     parser.add_argument("-t", "--threads", type=int, default=4,
@@ -55,10 +58,15 @@ Scoring Model:
                         help="Generate SBOM: cyclonedx (CycloneDX 1.5), spdx (SPDX 2.3), or all")
     parser.add_argument("--sarif", action="store_true",
                         help="Also generate SARIF 2.1.0 report for GitHub code-scanning")
+    parser.add_argument("--vex", action="store_true",
+                        help="Also generate CycloneDX VEX 1.5 report (CVE triage state with reachability)")
+    parser.add_argument("--yara-rules", metavar="DIR", default=None,
+                        help="Directory of YARA rules (.yar/.yara) to run against firmware. Requires `yara` CLI.")
     parser.add_argument("--only", action="append", metavar="STEP", default=None,
                         help="Only run listed analyzer steps (repeatable). Steps: daemons, dependencies, "
                              "banned-functions, credentials, certificates, config, aslr, sbom, cve, crypto, "
-                             "signing, service-privileges, kernel, update, security-tests, pqc")
+                             "signing, service-privileges, kernel, update, security-tests, pqc, "
+                             "reachability, taint, yara")
     parser.add_argument("--skip", action="append", metavar="STEP", default=None,
                         help="Skip listed analyzer steps (repeatable). See --only for valid step names.")
     parser.add_argument("--summary", choices=["text", "csv"], default=None,
@@ -84,13 +92,16 @@ Scoring Model:
 
     args = parser.parse_args()
 
-    target = Path(args.target)
-    if not target.exists():
-        print(f"Error: Target directory not found: {target}")
-        sys.exit(1)
-    if not target.is_dir():
-        print(f"Error: Target must be a directory: {target}")
-        sys.exit(1)
+    target_paths = [Path(t) for t in args.target]
+    for tp in target_paths:
+        if not tp.exists():
+            print(f"Error: Target directory not found: {tp}")
+            sys.exit(1)
+        if not tp.is_dir():
+            print(f"Error: Target must be a directory: {tp}")
+            sys.exit(1)
+    target = target_paths[0]
+    extra_roots = target_paths[1:]
 
     try:
         nvd_key = args.nvd_api_key or os.environ.get("NVD_API_KEY", "")
@@ -108,6 +119,8 @@ Scoring Model:
             cve_cache_dir=Path(args.cve_cache_dir) if args.cve_cache_dir else None,
             only_steps=args.only,
             skip_steps=args.skip,
+            extra_roots=extra_roots,
+            yara_rules_dir=Path(args.yara_rules) if args.yara_rules else None,
         )
         result = scanner.scan()
 
@@ -124,6 +137,11 @@ Scoring Model:
             sarif_path = output_path.with_suffix(".sarif")
             generate_sarif_report(result, sarif_path)
             print(f"[+] SARIF Report: {sarif_path}")
+
+        if args.vex:
+            vex_path = Path(f"{output_path.with_suffix('')}_vex.json")
+            generate_vex_report(result, vex_path)
+            print(f"[+] CycloneDX VEX 1.5: {vex_path}")
 
         # Summary outputs for CI / quick inspection
         if args.summary:
