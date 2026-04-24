@@ -157,6 +157,8 @@ class BannedFunctionHit:
     severity: Severity
     alternative: str
     compliance: str
+    taint: str = "unknown"  # "tainted" (arg traces to recv/argv/etc), "safe", "unknown"
+    taint_source: str = ""
 
 
 @dataclass
@@ -208,6 +210,8 @@ class SecurityTestFinding:
     recommendation: str = ""
     cve_id: str = ""  # For CVE findings
     affected_path: str = ""  # File/binary path
+    reachable: str = "unknown"  # "reachable", "not_reachable", "unknown" — from reachability pruning
+    reachability_reason: str = ""
 
 
 @dataclass
@@ -342,6 +346,17 @@ class SBOMResult:
 
 
 @dataclass
+class YaraMatch:
+    """A YARA rule match against a firmware file."""
+    rule: str
+    namespace: str
+    file: str
+    tags: List[str] = field(default_factory=list)
+    meta: Dict[str, str] = field(default_factory=dict)
+    severity: Severity = Severity.MEDIUM
+
+
+@dataclass
 class ScanResult:
     """Complete scan result."""
     target: str
@@ -367,3 +382,5 @@ class ScanResult:
     sbom: Optional[SBOMResult] = None
     pqc_readiness: Optional[dict] = None
     cve_correlation: Optional[CVECorrelationSummary] = None
+    yara_matches: List[YaraMatch] = field(default_factory=list)
+    extra_roots: List[str] = field(default_factory=list)
