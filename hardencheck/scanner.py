@@ -27,6 +27,9 @@ from hardencheck.analyzers.aslr_summary import ASLRSummaryGenerator
 from hardencheck.analyzers.sbom_generator import SBOMGenerator
 from hardencheck.analyzers.pqc_readiness import PQCReadinessAnalyzer
 from hardencheck.analyzers.cve_correlator import CVECorrelator
+from hardencheck.analyzers.reachability import ReachabilityAnalyzer
+from hardencheck.analyzers.taint_lite import TaintLiteAnalyzer
+from hardencheck.analyzers.yara_scanner import YaraScanner
 from hardencheck.reports.grading import classify_binary, calculate_grade
 
 
@@ -39,14 +42,15 @@ class HardenCheck:
         "daemons", "dependencies", "banned-functions", "credentials",
         "certificates", "config", "aslr", "sbom", "cve", "crypto",
         "signing", "service-privileges", "kernel", "update",
-        "security-tests", "pqc",
+        "security-tests", "pqc", "reachability", "taint", "yara",
     }
 
     def __init__(self, target: Path, threads: int = 4, verbose: bool = False, extended: bool = False,
                  include_patterns: Optional[List[str]] = None, exclude_patterns: Optional[List[str]] = None,
                  quiet: bool = False, nvd_api_key: str = "", skip_cve_lookup: bool = False,
                  cve_cache_enabled: bool = True, cve_cache_dir: Optional[Path] = None,
-                 only_steps: Optional[List[str]] = None, skip_steps: Optional[List[str]] = None):
+                 only_steps: Optional[List[str]] = None, skip_steps: Optional[List[str]] = None,
+                 extra_roots: Optional[List[Path]] = None, yara_rules_dir: Optional[Path] = None):
         """Initialize scanner.
 
         Args:
@@ -70,7 +74,9 @@ class HardenCheck:
             include_patterns=include_patterns,
             exclude_patterns=exclude_patterns,
             quiet=quiet,
+            extra_roots=extra_roots,
         )
+        self.yara_rules_dir = Path(yara_rules_dir) if yara_rules_dir else None
         self.quiet = self.ctx.quiet
         self.skip_cve_lookup = skip_cve_lookup
 
@@ -105,6 +111,9 @@ class HardenCheck:
             cache_enabled=cve_cache_enabled,
             cache_dir=cve_cache_dir,
         )
+        self.reachability_analyzer = ReachabilityAnalyzer(self.ctx)
+        self.taint_analyzer = TaintLiteAnalyzer(self.ctx)
+        self.yara_scanner = YaraScanner(self.ctx)
 
     @property
     def target(self):
@@ -260,8 +269,14 @@ class HardenCheck:
         else:
             banned_binary, banned_source = [], []
         banned_all = banned_binary + banned_source
+        if self._enabled("taint") and banned_source:
+            self.taint_analyzer.annotate(banned_source)
         if not self.quiet:
+            tainted = sum(1 for h in banned_all if h.taint == "tainted")
+            safe = sum(1 for h in banned_all if h.taint == "safe")
             print(f"      Found: {len(banned_all)} ({len(banned_binary)} binary, {len(banned_source)} source)")
+            if self._enabled("taint"):
+                print(f"      Taint-lite: {tainted} tainted, {safe} likely-safe")
             print()
 
             print("[7/18] Scanning for credentials and certificates...")
@@ -430,7 +445,16 @@ class HardenCheck:
             default_creds_findings = self.security_tester.test_default_credentials(configs, daemons)
             security_tests.extend(default_creds_findings)
         security_tests.extend(live_cve_findings)
+
+        if self._enabled("reachability") and sbom:
+            self.reachability_analyzer.annotate(security_tests, sbom)
+
         if not self.quiet:
+            if self._enabled("reachability"):
+                reach = sum(1 for s in security_tests if s.reachable == "reachable")
+                not_reach = sum(1 for s in security_tests if s.reachable == "not_reachable")
+                if reach or not_reach:
+                    print(f"      Reachability: {reach} reachable, {not_reach} not_reachable")
             print(f"      Security test findings: {len(security_tests)}")
             if security_tests:
                 weak_crypto_count = sum(1 for f in security_tests if f.test_type == "weak_crypto")
@@ -460,6 +484,15 @@ class HardenCheck:
             else:
                 print("      No cryptographic algorithm usage detected")
             print()
+
+        yara_matches = []
+        if self._enabled("yara") and self.yara_rules_dir:
+            if not self.quiet:
+                print("[+] Running YARA rules...")
+            yara_matches = self.yara_scanner.scan(self.yara_rules_dir)
+            if not self.quiet:
+                print(f"      YARA matches: {len(yara_matches)}")
+                print()
 
         duration = (datetime.now() - start_time).total_seconds()
 
@@ -519,4 +552,6 @@ class HardenCheck:
             sbom=sbom,
             pqc_readiness=pqc_readiness,
             cve_correlation=cve_correlation_summary,
+            yara_matches=yara_matches,
+            extra_roots=[str(p) for p in self.ctx.extra_roots],
         )
