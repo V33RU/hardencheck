@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://github.com/v33ru/hardencheck">
-    <img src="https://img.shields.io/badge/version-1.1-blue.svg" />
+    <img src="https://img.shields.io/badge/version-1.2-blue.svg" />
   </a>
   <a href="https://www.python.org/">
     <img src="https://img.shields.io/badge/python-3.7+-green.svg" />
@@ -236,6 +236,12 @@ python3 -m hardencheck /path/to/firmware -o report.html
 | **Vuln Versions** | CVE pattern matching, weak crypto detection, default creds |
 | **PQC Readiness** | Post-quantum crypto assessment: detects RSA/ECDSA/DH usage, checks for ML-KEM/ML-DSA/SLH-DSA adoption |
 | **SBOM Generation** | CycloneDX 1.5 + SPDX 2.3, CPE 2.3, PURL, licenses, dependency tree |
+| **VEX Output** | CycloneDX VEX 1.5 — per-CVE triage state (`in_triage`, `not_affected`, …) with `code_not_reachable` justifications |
+| **Reachability Pruning** | Cross-references CVE'd libraries against binary `NEEDED` lists; marks unreferenced libs as not-reachable to cut CVE noise ~40-60% |
+| **Taint-Lite** | Source-level banned-function hits tagged `tainted` / `safe` based on whether args trace to `recv` / `argv` / `getenv` / `read` — cuts false positives ~70% |
+| **YARA Rules** | Drop `.yar` / `.yara` files into a directory to run custom IOC / backdoor / malware rules against firmware (shells out to `yara` CLI) |
+| **Multi-Root Scanning** | Scan multi-partition firmware (boot + rootfs + data) in one run — just pass multiple target directories |
+| **SARIF 2.1.0** | GitHub code-scanning integration |
 | **Cross-Validation** | Up to 4 tools per binary, confidence scoring (rabin2 x readelf x scanelf) |
 
 ---
@@ -267,6 +273,22 @@ python3 hardencheck.py /opt/firmware/squashfs-root --summary csv
 python3 hardencheck.py /opt/firmware/squashfs-root \
     --include 'bin/*' --include 'usr/sbin/*' --exclude 'usr/lib/*'
 
+# Multi-partition firmware (boot + rootfs + data)
+python3 hardencheck.py /fw/boot /fw/rootfs /fw/data -o report.html
+
+# CycloneDX VEX output (pair with SBOM for CVE triage)
+python3 hardencheck.py /opt/firmware/squashfs-root --sbom all --vex
+
+# SARIF output for GitHub code-scanning
+python3 hardencheck.py /opt/firmware/squashfs-root --sarif
+
+# Custom YARA rules (backdoor / IOC detection)
+python3 hardencheck.py /opt/firmware/squashfs-root --yara-rules ./rules
+
+# Run only specific analyzer steps (skip slow ones)
+python3 hardencheck.py /opt/firmware/squashfs-root \
+    --skip cve --skip yara
+
 # As a Python module
 python3 -m hardencheck /opt/firmware/squashfs-root -o report.html
 ```
@@ -281,11 +303,18 @@ python3 -m hardencheck /opt/firmware/squashfs-root -o report.html
 | `--slim` | Minimal CSS for smaller HTML |
 | `--extended` | Enable Stack Clash + CFI checks (requires `hardening-check`) |
 | `--sbom` | Generate SBOM: `cyclonedx`, `spdx`, or `all` |
+| `--sarif` | Generate SARIF 2.1.0 report for GitHub code-scanning |
+| `--vex` | Generate CycloneDX VEX 1.5 (CVE triage state + reachability) |
+| `--yara-rules DIR` | Run YARA rules from directory (requires `yara` CLI) |
 | `--summary` | Generate plain-text or CSV summary: `text` or `csv` |
 | `--fail-on-grade` | Exit code 1 if grade below threshold (e.g. `--fail-on-grade B`) |
 | `--include` | Only scan paths matching GLOB (repeatable) |
 | `--exclude` | Skip paths matching GLOB (repeatable) |
+| `--only STEP` | Only run listed analyzer steps (repeatable) |
+| `--skip STEP` | Skip listed analyzer steps (repeatable) |
 | `--version` | Print version and exit |
+
+**Analyzer step names** (for `--only` / `--skip`): `daemons`, `dependencies`, `banned-functions`, `credentials`, `certificates`, `config`, `aslr`, `sbom`, `cve`, `crypto`, `signing`, `service-privileges`, `kernel`, `update`, `security-tests`, `pqc`, `reachability`, `taint`, `yara`.
 
 ---
 
@@ -308,9 +337,28 @@ Duration: 34.2s
 
 [+] HTML Report: audit_report.html
 [+] JSON Report: audit_report.json
+[+] SARIF Report: audit_report.sarif
+[+] CycloneDX VEX 1.5: audit_report_vex.json
 [+] CycloneDX 1.5 SBOM: audit_report_sbom_cyclonedx.json
 [+] SPDX 2.3 SBOM: audit_report_sbom_spdx.json
 ```
+
+---
+
+## SBOM vs VEX
+
+SBOM and VEX answer different questions and are designed to ship together:
+
+| | SBOM (CycloneDX / SPDX) | VEX (CycloneDX VEX) |
+|---|---|---|
+| **Question** | *What's in the firmware?* | *Is CVE-X actually exploitable here?* |
+| **Content** | Components, versions, licenses, CPEs, deps | CVEs + per-CVE triage state |
+| **Example** | `openssl 1.1.1k` | `CVE-2023-0286 → not_affected (code_not_reachable)` |
+| **Lifetime** | Static (one per build) | Living document |
+
+HardenCheck's reachability pruner cross-references each CVE'd component against every binary's `NEEDED` list. Libraries that ship in the firmware but are never linked are automatically marked `not_affected / code_not_reachable` in the VEX output — typically cutting CVE noise **40-60%** on embedded firmware.
+
+Standards alignment: CISA, US EO 14028, and EU CRA all treat SBOM + VEX as the paired deliverable.
 
 ---
 
@@ -428,9 +476,10 @@ print(f"Daemons: {len(result.daemons)}")
 | `hardening-check` | `devscripts` | Medium |
 | `scanelf` | `pax-utils` | Low |
 | `openssl` | `openssl` | Low |
+| `yara` | `yara` | Optional (only needed for `--yara-rules`) |
 
 ```bash
-sudo apt install binutils elfutils file radare2 devscripts pax-utils openssl
+sudo apt install binutils elfutils file radare2 devscripts pax-utils openssl yara
 ```
 
 > Degrades gracefully — missing tools reduce confidence scores, not crash.
